@@ -1,0 +1,256 @@
+use std::path::{Path, PathBuf};
+
+use anyhow::Result;
+
+use crate::config::{Config, ConfigurableKey};
+use crate::fs::{self, FileEntry};
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum ActivePane {
+    Left,
+    Right,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum InputMode {
+    Normal,
+    Command,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum StatusKind {
+    Info,
+    Error,
+}
+
+#[derive(Debug, Clone)]
+pub struct StatusMessage {
+    pub text: String,
+    pub kind: StatusKind,
+}
+
+impl StatusMessage {
+    pub fn info(text: impl Into<String>) -> Self {
+        Self {
+            text: text.into(),
+            kind: StatusKind::Info,
+        }
+    }
+
+    pub fn error(text: impl Into<String>) -> Self {
+        Self {
+            text: text.into(),
+            kind: StatusKind::Error,
+        }
+    }
+}
+
+#[derive(Debug, Clone)]
+pub struct CommandState {
+    pub buffer: String,
+    pub cursor: usize,
+    pub trigger_key: ConfigurableKey,
+}
+
+impl CommandState {
+    pub fn new(trigger_key: ConfigurableKey) -> Self {
+        Self {
+            buffer: String::new(),
+            cursor: 0,
+            trigger_key,
+        }
+    }
+
+    pub fn clear(&mut self) {
+        self.buffer.clear();
+        self.cursor = 0;
+    }
+}
+
+#[derive(Debug, Clone)]
+pub struct PaneState {
+    pub cwd: PathBuf,
+    pub entries: Vec<FileEntry>,
+    pub selected: usize,
+    pub scroll: usize,
+    pub last_error: Option<String>,
+}
+
+impl PaneState {
+    pub fn new(cwd: PathBuf) -> Result<Self> {
+        let entries = fs::read_directory(&cwd)?;
+        Ok(Self {
+            cwd,
+            entries,
+            selected: 0,
+            scroll: 0,
+            last_error: None,
+        })
+    }
+
+    pub fn refresh(&mut self) -> Result<()> {
+        let previous_name = self.selected_entry().map(|entry| entry.name.clone());
+        let entries = fs::read_directory(&self.cwd)?;
+
+        self.entries = entries;
+        self.last_error = None;
+
+        self.selected = previous_name
+            .and_then(|name| self.entries.iter().position(|entry| entry.name == name))
+            .unwrap_or(self.selected);
+        self.clamp_selection();
+
+        Ok(())
+    }
+
+    pub fn set_cwd(&mut self, cwd: PathBuf) -> Result<()> {
+        let previous_cwd = self.cwd.clone();
+        let previous_entries = self.entries.clone();
+        let previous_selected = self.selected;
+        let previous_scroll = self.scroll;
+
+        self.cwd = cwd;
+        match self.refresh() {
+            Ok(()) => Ok(()),
+            Err(err) => {
+                self.cwd = previous_cwd;
+                self.entries = previous_entries;
+                self.selected = previous_selected;
+                self.scroll = previous_scroll;
+                self.last_error = Some(err.to_string());
+                Err(err)
+            }
+        }
+    }
+
+    pub fn selected_entry(&self) -> Option<&FileEntry> {
+        self.entries.get(self.selected)
+    }
+
+    pub fn move_up(&mut self) {
+        if self.selected > 0 {
+            self.selected -= 1;
+        }
+    }
+
+    pub fn move_down(&mut self) {
+        if self.selected + 1 < self.entries.len() {
+            self.selected += 1;
+        }
+    }
+
+    pub fn go_parent(&mut self) -> Result<bool> {
+        if let Some(parent) = self.cwd.parent().map(Path::to_path_buf) {
+            if parent != self.cwd {
+                self.set_cwd(parent)?;
+                return Ok(true);
+            }
+        }
+
+        Ok(false)
+    }
+
+    pub fn ensure_visible(&mut self, viewport_height: usize) {
+        if viewport_height == 0 {
+            self.scroll = self.selected;
+            return;
+        }
+
+        if self.selected < self.scroll {
+            self.scroll = self.selected;
+        } else if self.selected >= self.scroll + viewport_height {
+            self.scroll = self.selected + 1 - viewport_height;
+        }
+    }
+
+    pub fn clamp_selection(&mut self) {
+        if self.entries.is_empty() {
+            self.selected = 0;
+            self.scroll = 0;
+            return;
+        }
+
+        self.selected = self.selected.min(self.entries.len() - 1);
+        self.scroll = self.scroll.min(self.selected);
+    }
+}
+
+#[derive(Debug)]
+pub struct AppState {
+    pub left: PaneState,
+    pub right: PaneState,
+    pub active_pane: ActivePane,
+    pub mode: InputMode,
+    pub command: CommandState,
+    pub status: StatusMessage,
+    pub should_quit: bool,
+    pub config: Config,
+}
+
+impl AppState {
+    pub fn new(config: Config, cwd: PathBuf) -> Result<Self> {
+        let left = PaneState::new(cwd.clone())?;
+        let right = PaneState::new(cwd.clone())?;
+        let status = if config.startup_warnings.is_empty() {
+            StatusMessage::info(format!(
+                "Tab switch pane | Enter open | Backspace up | {} command | q quit",
+                config.key_bindings.enter_command_mode.label()
+            ))
+        } else {
+            StatusMessage::error(config.startup_warnings.join(" | "))
+        };
+
+        Ok(Self {
+            left,
+            right,
+            active_pane: ActivePane::Left,
+            mode: InputMode::Normal,
+            command: CommandState::new(config.key_bindings.enter_command_mode.clone()),
+            status,
+            should_quit: false,
+            config,
+        })
+    }
+
+    pub fn active_pane(&self) -> &PaneState {
+        match self.active_pane {
+            ActivePane::Left => &self.left,
+            ActivePane::Right => &self.right,
+        }
+    }
+
+    pub fn active_pane_mut(&mut self) -> &mut PaneState {
+        match self.active_pane {
+            ActivePane::Left => &mut self.left,
+            ActivePane::Right => &mut self.right,
+        }
+    }
+
+    pub fn set_status(&mut self, status: StatusMessage) {
+        self.status = status;
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use std::fs;
+
+    use tempfile::TempDir;
+
+    use super::PaneState;
+
+    #[test]
+    fn refresh_clamps_selection_when_entries_shrink() {
+        let temp = TempDir::new().expect("temp dir");
+        fs::write(temp.path().join("a.txt"), b"a").expect("write a");
+        fs::write(temp.path().join("b.txt"), b"b").expect("write b");
+
+        let mut pane = PaneState::new(temp.path().to_path_buf()).expect("pane");
+        pane.selected = 1;
+
+        fs::remove_file(temp.path().join("b.txt")).expect("remove b");
+        pane.refresh().expect("refresh");
+
+        assert_eq!(pane.selected, 0);
+    }
+}
