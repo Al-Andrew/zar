@@ -17,31 +17,18 @@ pub enum InputMode {
     Command,
 }
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum StatusKind {
-    Info,
-    Error,
-}
-
 #[derive(Debug, Clone)]
 pub struct StatusMessage {
     pub text: String,
-    pub kind: StatusKind,
 }
 
 impl StatusMessage {
     pub fn info(text: impl Into<String>) -> Self {
-        Self {
-            text: text.into(),
-            kind: StatusKind::Info,
-        }
+        Self { text: text.into() }
     }
 
     pub fn error(text: impl Into<String>) -> Self {
-        Self {
-            text: text.into(),
-            kind: StatusKind::Error,
-        }
+        Self { text: text.into() }
     }
 }
 
