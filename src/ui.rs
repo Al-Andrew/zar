@@ -90,15 +90,7 @@ fn render_entry(entry: &FileEntry, selected: bool) -> Line<'static> {
             .add_modifier(Modifier::BOLD);
     }
 
-    let prefix = if entry.kind.is_directory() {
-        "[D]"
-    } else {
-        "   "
-    };
-    Line::from(Span::styled(
-        format!("{prefix} {}", entry.display_name()),
-        style,
-    ))
+    Line::from(Span::styled(entry.display_name(), style))
 }
 
 fn render_bottom_bar(frame: &mut Frame<'_>, app: &AppState, area: Rect) {
@@ -129,5 +121,44 @@ fn render_bottom_bar(frame: &mut Frame<'_>, app: &AppState, area: Rect) {
                 .saturating_add(app.command.buffer[..app.command.cursor].chars().count() as u16);
             frame.set_cursor_position((cursor_x, inner.y));
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use std::ffi::OsString;
+    use std::path::PathBuf;
+
+    use ratatui::style::Stylize;
+
+    use super::render_entry;
+    use crate::fs::{EntryKind, FileEntry};
+
+    fn test_entry(kind: EntryKind, name: &str) -> FileEntry {
+        FileEntry {
+            name: OsString::from(name),
+            path: PathBuf::from(name),
+            kind,
+            is_hidden: false,
+        }
+    }
+
+    #[test]
+    fn directory_entries_render_without_prefix_and_keep_directory_color() {
+        let line = render_entry(&test_entry(EntryKind::Directory, "src"), false);
+
+        assert_eq!(line.spans.len(), 1);
+        assert_eq!(line.spans[0].content, "src");
+        assert!(!line.spans[0].content.contains("[D]"));
+        assert_eq!(line.spans[0].style, "src".cyan().style);
+    }
+
+    #[test]
+    fn selected_entries_use_selected_row_style() {
+        let line = render_entry(&test_entry(EntryKind::Directory, "src"), true);
+
+        assert_eq!(line.spans.len(), 1);
+        assert_eq!(line.spans[0].content, "src");
+        assert_eq!(line.spans[0].style, "src".white().on_blue().bold().style);
     }
 }
