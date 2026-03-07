@@ -5,7 +5,7 @@ use ratatui::text::{Line, Span};
 use ratatui::widgets::{Block, Borders, Paragraph};
 
 use crate::fs::{EntryKind, FileEntry};
-use crate::state::{ActivePane, AppState, InputMode, PaneState, StatusKind};
+use crate::state::{ActivePane, AppState, InputMode, PaneState};
 
 pub fn render(frame: &mut Frame<'_>, app: &mut AppState) {
     let layout = Layout::default()
@@ -100,16 +100,19 @@ fn render_bottom_bar(frame: &mut Frame<'_>, app: &AppState, area: Rect) {
 
     match app.mode {
         InputMode::Normal => {
-            let help = format!(
-                "{} | {} command | Tab switch pane | Enter open | Backspace up | q quit",
-                app.status.text,
-                app.command.trigger_key.label()
-            );
-            let style = match app.status.kind {
-                StatusKind::Info => Style::default(),
-                StatusKind::Error => Style::default().fg(Color::Red),
-            };
-            frame.render_widget(Paragraph::new(help).style(style), inner);
+            let slots = Layout::default()
+                .direction(Direction::Horizontal)
+                .constraints([Constraint::Ratio(1, 10); 10])
+                .split(inner);
+
+            for (index, slot) in slots.iter().enumerate() {
+                let borders = if index + 1 < slots.len() {
+                    Borders::RIGHT
+                } else {
+                    Borders::NONE
+                };
+                frame.render_widget(Block::default().borders(borders), *slot);
+            }
         }
         InputMode::Command => {
             let prompt = format!("cmd> {}", app.command.buffer);
@@ -201,5 +204,29 @@ mod tests {
         assert_eq!(right_cell.fg, Color::White);
         assert_eq!(right_cell.bg, Color::Blue);
         assert!(right_cell.modifier.contains(Modifier::BOLD));
+    }
+
+    #[test]
+    fn normal_mode_bottom_bar_renders_empty_ten_slot_layout() {
+        let temp = TempDir::new().expect("temp dir");
+        let app = AppState::new(Config::default(), temp.path().to_path_buf()).expect("app");
+
+        let backend = TestBackend::new(22, 3);
+        let mut terminal = Terminal::new(backend).expect("terminal");
+        terminal
+            .draw(|frame| super::render_bottom_bar(frame, &app, frame.area()))
+            .expect("draw");
+
+        let buffer = terminal.backend().buffer();
+        let separator_columns = [2_u16, 4, 6, 8, 10, 12, 14, 16, 18];
+
+        for x in 1..21 {
+            let cell = &buffer[(x, 1)];
+            if separator_columns.contains(&x) {
+                assert_eq!(cell.symbol(), "│");
+            } else {
+                assert_eq!(cell.symbol(), " ");
+            }
+        }
     }
 }
