@@ -68,7 +68,7 @@ fn render_pane(frame: &mut Frame<'_>, pane: &PaneState, area: Rect, active: bool
         pane.entries[start..end]
             .iter()
             .enumerate()
-            .map(|(index, entry)| render_entry(entry, start + index == pane.selected))
+            .map(|(index, entry)| render_entry(entry, active && start + index == pane.selected))
             .collect()
     };
 
@@ -127,12 +127,18 @@ fn render_bottom_bar(frame: &mut Frame<'_>, app: &AppState, area: Rect) {
 #[cfg(test)]
 mod tests {
     use std::ffi::OsString;
+    use std::fs;
     use std::path::PathBuf;
 
-    use ratatui::style::Stylize;
+    use ratatui::Terminal;
+    use ratatui::backend::TestBackend;
+    use ratatui::style::{Color, Modifier, Stylize};
+    use tempfile::TempDir;
 
     use super::render_entry;
+    use crate::config::Config;
     use crate::fs::{EntryKind, FileEntry};
+    use crate::state::{ActivePane, AppState};
 
     fn test_entry(kind: EntryKind, name: &str) -> FileEntry {
         FileEntry {
@@ -160,5 +166,40 @@ mod tests {
         assert_eq!(line.spans.len(), 1);
         assert_eq!(line.spans[0].content, "src");
         assert_eq!(line.spans[0].style, "src".white().on_blue().bold().style);
+    }
+
+    #[test]
+    fn inactive_pane_keeps_selection_state_without_drawing_highlight() {
+        let temp = TempDir::new().expect("temp dir");
+        let left_dir = temp.path().join("left");
+        let right_dir = temp.path().join("right");
+        fs::create_dir(&left_dir).expect("left dir");
+        fs::create_dir(&right_dir).expect("right dir");
+        fs::write(left_dir.join("alpha.txt"), b"a").expect("left file");
+        fs::write(right_dir.join("zeta.txt"), b"z").expect("right file");
+
+        let mut app = AppState::new(Config::default(), temp.path().to_path_buf()).expect("app");
+        app.left.set_cwd(left_dir).expect("left cwd");
+        app.right.set_cwd(right_dir).expect("right cwd");
+        app.left.selected = 0;
+        app.right.selected = 0;
+        app.active_pane = ActivePane::Right;
+
+        let backend = TestBackend::new(60, 6);
+        let mut terminal = Terminal::new(backend).expect("terminal");
+        terminal.draw(|frame| super::render(frame, &mut app)).expect("draw");
+
+        let buffer = terminal.backend().buffer();
+        let left_cell = &buffer[(1, 1)];
+        let right_cell = &buffer[(31, 1)];
+
+        assert_eq!(left_cell.symbol(), "a");
+        assert_eq!(left_cell.bg, Color::Reset);
+        assert!(!left_cell.modifier.contains(Modifier::BOLD));
+
+        assert_eq!(right_cell.symbol(), "z");
+        assert_eq!(right_cell.fg, Color::White);
+        assert_eq!(right_cell.bg, Color::Blue);
+        assert!(right_cell.modifier.contains(Modifier::BOLD));
     }
 }
