@@ -10,34 +10,11 @@ use crate::state::{ActivePane, AppState, InputMode, PaneState, StatusKind};
 pub fn render(frame: &mut Frame<'_>, app: &mut AppState) {
     let layout = Layout::default()
         .direction(Direction::Vertical)
-        .constraints([
-            Constraint::Length(1),
-            Constraint::Min(3),
-            Constraint::Length(3),
-        ])
+        .constraints([Constraint::Min(3), Constraint::Length(3)])
         .split(frame.area());
 
-    render_header(frame, app, layout[0]);
-    render_panes(frame, app, layout[1]);
-    render_bottom_bar(frame, app, layout[2]);
-}
-
-fn render_header(frame: &mut Frame<'_>, app: &AppState, area: Rect) {
-    let active = match app.active_pane {
-        ActivePane::Left => "left",
-        ActivePane::Right => "right",
-    };
-    let mode = match app.mode {
-        InputMode::Normal => "normal",
-        InputMode::Command => "command",
-    };
-    let text = Line::from(vec![
-        Span::styled(" zar ", Style::default().fg(Color::Black).bg(Color::Cyan)),
-        Span::raw(format!(" active: {active} ")),
-        Span::raw(format!(" mode: {mode} ")),
-    ]);
-
-    frame.render_widget(Paragraph::new(text), area);
+    render_panes(frame, app, layout[0]);
+    render_bottom_bar(frame, app, layout[1]);
 }
 
 fn render_panes(frame: &mut Frame<'_>, app: &mut AppState, area: Rect) {
