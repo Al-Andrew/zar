@@ -16,6 +16,7 @@ pub enum InputMode {
     Normal,
     Command,
     Transfer,
+    Preview,
 }
 
 #[derive(Debug, Clone)]
@@ -145,6 +146,38 @@ impl TransferDialogState {
 }
 
 #[derive(Debug, Clone)]
+pub struct PreviewState {
+    pub path: PathBuf,
+    pub lines: Vec<String>,
+    pub scroll: usize,
+}
+
+impl PreviewState {
+    pub fn new(path: PathBuf, contents: String) -> Self {
+        let lines = if contents.is_empty() {
+            vec![String::new()]
+        } else {
+            contents.lines().map(ToOwned::to_owned).collect()
+        };
+
+        Self {
+            path,
+            lines,
+            scroll: 0,
+        }
+    }
+
+    pub fn move_up(&mut self) {
+        self.scroll = self.scroll.saturating_sub(1);
+    }
+
+    pub fn move_down(&mut self, viewport_height: usize) {
+        let max_scroll = self.lines.len().saturating_sub(viewport_height.max(1));
+        self.scroll = (self.scroll + 1).min(max_scroll);
+    }
+}
+
+#[derive(Debug, Clone)]
 pub struct PaneState {
     pub cwd: PathBuf,
     pub entries: Vec<FileEntry>,
@@ -260,6 +293,7 @@ pub struct AppState {
     pub mode: InputMode,
     pub command: CommandState,
     pub transfer: Option<TransferDialogState>,
+    pub preview: Option<PreviewState>,
     pub status: StatusMessage,
     pub should_quit: bool,
     pub config: Config,
@@ -289,6 +323,7 @@ impl AppState {
             mode: InputMode::Normal,
             command: CommandState::new(config.key_bindings.enter_command_mode.clone()),
             transfer: None,
+            preview: None,
             status,
             should_quit: false,
             config,

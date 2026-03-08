@@ -14,8 +14,8 @@ use crate::config::Config;
 use crate::fs::{self, EntryKind};
 use crate::input::{Action, CommandEditAction, event_to_action};
 use crate::state::{
-    ActivePane, AppState, InputMode, StatusMessage, TransferControl, TransferDialogState,
-    TransferOperation,
+    ActivePane, AppState, InputMode, PreviewState, StatusMessage, TransferControl,
+    TransferDialogState, TransferOperation,
 };
 use crate::ui;
 
@@ -89,6 +89,7 @@ impl App {
                     }
                 )));
             }
+            Action::BeginPreview => self.begin_preview(),
             Action::OpenSelection => self.open_selection(),
             Action::GoParent => match self.state.active_pane_mut().go_parent() {
                 Ok(true) => {
@@ -117,6 +118,8 @@ impl App {
             Action::TransferFocusDown => self.move_transfer_focus_down(),
             Action::TransferFocusLeft => self.move_transfer_focus_left(),
             Action::TransferFocusRight => self.move_transfer_focus_right(),
+            Action::PreviewUp => self.preview_up(),
+            Action::PreviewDown => self.preview_down(),
             Action::SubmitCommand => self.submit_command(),
             Action::SubmitTransfer => self.submit_transfer(),
             Action::CancelCommand => {
@@ -130,6 +133,11 @@ impl App {
                 self.state.mode = InputMode::Normal;
                 self.state
                     .set_status(StatusMessage::info("file operation cancelled"));
+            }
+            Action::ClosePreview => {
+                self.state.preview = None;
+                self.state.mode = InputMode::Normal;
+                self.state.set_status(StatusMessage::info("preview closed"));
             }
             Action::Quit => self.state.should_quit = true,
             Action::ClearStatus => self.state.set_status(StatusMessage::info(format!(
@@ -166,6 +174,29 @@ impl App {
         let destination = self.state.inactive_pane().cwd.display().to_string();
         self.state.transfer = Some(TransferDialogState::new(operation, entry.path, destination));
         self.state.mode = InputMode::Transfer;
+    }
+
+    fn begin_preview(&mut self) {
+        let Some(entry) = self.state.active_pane().selected_entry().cloned() else {
+            self.state.set_status(StatusMessage::info("nothing selected"));
+            return;
+        };
+
+        if !matches!(entry.kind, EntryKind::File) {
+            self.state.set_status(StatusMessage::error(format!(
+                "{} is not a file",
+                entry.display_name()
+            )));
+            return;
+        }
+
+        match fs::read_text_file(&entry.path) {
+            Ok(contents) => {
+                self.state.preview = Some(PreviewState::new(entry.path, contents));
+                self.state.mode = InputMode::Preview;
+            }
+            Err(err) => self.state.set_status(StatusMessage::error(err.to_string())),
+        }
     }
 
     fn begin_create_directory(&mut self) {
@@ -331,6 +362,18 @@ impl App {
         self.state.left.refresh()?;
         self.state.right.refresh()?;
         Ok(())
+    }
+
+    fn preview_up(&mut self) {
+        if let Some(preview) = self.state.preview.as_mut() {
+            preview.move_up();
+        }
+    }
+
+    fn preview_down(&mut self) {
+        if let Some(preview) = self.state.preview.as_mut() {
+            preview.move_down(20);
+        }
     }
 
     fn handle_mouse(&mut self, event: MouseEvent, frame_area: ratatui::layout::Rect) -> Result<()> {
@@ -849,6 +892,32 @@ mod tests {
 
         assert_eq!(app.state.mode, InputMode::Normal);
         assert!(app.state.transfer.is_none());
+
+        env::set_current_dir(previous).expect("restore cwd");
+    }
+
+    #[test]
+    fn begin_preview_opens_selected_file_and_close_restores_normal_mode() {
+        let _guard = cwd_lock();
+        let temp = TempDir::new().expect("temp dir");
+        fs::write(temp.path().join("note.txt"), "line 1\nline 2").expect("file");
+
+        let previous = env::current_dir().expect("cwd");
+        env::set_current_dir(temp.path()).expect("set cwd");
+
+        let mut app = App::new(Config::default()).expect("app");
+        app.handle_action(Action::BeginPreview).expect("preview");
+
+        assert_eq!(app.state.mode, InputMode::Preview);
+        assert_eq!(
+            app.state.preview.as_ref().expect("preview").lines,
+            vec!["line 1".to_string(), "line 2".to_string()]
+        );
+
+        app.handle_action(Action::ClosePreview).expect("close preview");
+
+        assert_eq!(app.state.mode, InputMode::Normal);
+        assert!(app.state.preview.is_none());
 
         env::set_current_dir(previous).expect("restore cwd");
     }

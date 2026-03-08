@@ -17,6 +17,7 @@ pub enum Action {
     MoveDown,
     SwitchPane,
     OpenSelection,
+    BeginPreview,
     GoParent,
     BeginCopy,
     BeginMove,
@@ -29,10 +30,13 @@ pub enum Action {
     TransferFocusDown,
     TransferFocusLeft,
     TransferFocusRight,
+    PreviewUp,
+    PreviewDown,
     SubmitCommand,
     SubmitTransfer,
     CancelCommand,
     CancelTransfer,
+    ClosePreview,
     Quit,
     ClearStatus,
 }
@@ -43,6 +47,7 @@ impl KeyBindings {
             InputMode::Normal => self.resolve_normal_mode(event),
             InputMode::Command => self.resolve_command_mode(event),
             InputMode::Transfer => self.resolve_transfer_mode(event),
+            InputMode::Preview => self.resolve_preview_mode(event),
         }
     }
 
@@ -67,6 +72,9 @@ impl KeyBindings {
         }
         if self.open.matches(event) {
             return Some(Action::OpenSelection);
+        }
+        if event.code == KeyCode::F(3) && event.modifiers.is_empty() {
+            return Some(Action::BeginPreview);
         }
         if self.parent.matches(event) {
             return Some(Action::GoParent);
@@ -145,6 +153,23 @@ impl KeyBindings {
             _ => None,
         }
     }
+
+    fn resolve_preview_mode(&self, event: KeyEvent) -> Option<Action> {
+        if event.code == KeyCode::Char('c') && event.modifiers == KeyModifiers::CONTROL {
+            return Some(Action::Quit);
+        }
+        if self.quit.matches(event) {
+            return Some(Action::Quit);
+        }
+
+        match event.code {
+            KeyCode::Esc if event.modifiers.is_empty() => Some(Action::ClosePreview),
+            KeyCode::F(3) if event.modifiers.is_empty() => Some(Action::ClosePreview),
+            KeyCode::Up if event.modifiers.is_empty() => Some(Action::PreviewUp),
+            KeyCode::Down if event.modifiers.is_empty() => Some(Action::PreviewDown),
+            _ => None,
+        }
+    }
 }
 
 pub fn event_to_action(bindings: &KeyBindings, mode: InputMode, event: Event) -> Option<Action> {
@@ -167,6 +192,13 @@ mod tests {
     fn function_keys_open_transfer_dialogs_in_normal_mode() {
         let bindings = KeyBindings::default();
 
+        assert_eq!(
+            bindings.resolve(
+                KeyEvent::new(KeyCode::F(3), KeyModifiers::NONE),
+                InputMode::Normal
+            ),
+            Some(Action::BeginPreview)
+        );
         assert_eq!(
             bindings.resolve(
                 KeyEvent::new(KeyCode::F(5), KeyModifiers::NONE),
@@ -214,6 +246,26 @@ mod tests {
                 InputMode::Transfer
             ),
             Some(Action::TransferFocusRight)
+        );
+    }
+
+    #[test]
+    fn preview_mode_maps_close_and_scroll_keys() {
+        let bindings = KeyBindings::default();
+
+        assert_eq!(
+            bindings.resolve(
+                KeyEvent::new(KeyCode::Esc, KeyModifiers::NONE),
+                InputMode::Preview
+            ),
+            Some(Action::ClosePreview)
+        );
+        assert_eq!(
+            bindings.resolve(
+                KeyEvent::new(KeyCode::Down, KeyModifiers::NONE),
+                InputMode::Preview
+            ),
+            Some(Action::PreviewDown)
         );
     }
 }

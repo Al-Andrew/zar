@@ -109,6 +109,10 @@ pub fn create_directory(path: &Path) -> Result<()> {
     Ok(())
 }
 
+pub fn read_text_file(path: &Path) -> Result<String> {
+    fs::read_to_string(path).with_context(|| format!("failed to read {}", path.display()))
+}
+
 pub fn delete_entry(path: &Path) -> Result<()> {
     if !path.exists() {
         bail!("path does not exist: {}", path.display());
@@ -152,7 +156,7 @@ mod tests {
 
     use tempfile::TempDir;
 
-    use super::{copy_file, create_directory, delete_entry, move_file, read_directory};
+    use super::{copy_file, create_directory, delete_entry, move_file, read_directory, read_text_file};
 
     #[test]
     fn sorts_directories_before_files_case_insensitively() {
@@ -214,5 +218,14 @@ mod tests {
         delete_entry(&path).expect("delete");
 
         assert!(!path.exists());
+    }
+
+    #[test]
+    fn read_text_file_returns_utf8_contents() {
+        let temp = TempDir::new().expect("temp dir");
+        let path = temp.path().join("note.txt");
+        fs::write(&path, "hello\nworld").expect("write");
+
+        assert_eq!(read_text_file(&path).expect("read"), "hello\nworld");
     }
 }

@@ -18,8 +18,10 @@ pub fn render(frame: &mut Frame<'_>, app: &mut AppState) {
     render_panes(frame, app, layout[0]);
     render_bottom_bar(frame, app, layout[1]);
 
-    if matches!(app.mode, InputMode::Transfer) {
-        render_transfer_dialog(frame, app);
+    match app.mode {
+        InputMode::Transfer => render_transfer_dialog(frame, app),
+        InputMode::Preview => render_preview(frame, app),
+        _ => {}
     }
 }
 
@@ -130,7 +132,7 @@ fn render_bottom_bar(frame: &mut Frame<'_>, app: &AppState, area: Rect) {
     frame.render_widget(block, area);
 
     match app.mode {
-        InputMode::Normal | InputMode::Transfer => {
+        InputMode::Normal | InputMode::Transfer | InputMode::Preview => {
             let slots = Layout::default()
                 .direction(Direction::Horizontal)
                 .constraints([Constraint::Ratio(1, 10); 10])
@@ -156,6 +158,41 @@ fn render_bottom_bar(frame: &mut Frame<'_>, app: &AppState, area: Rect) {
             frame.set_cursor_position((cursor_x, inner.y));
         }
     }
+}
+
+fn render_preview(frame: &mut Frame<'_>, app: &AppState) {
+    let Some(preview) = app.preview.as_ref() else {
+        return;
+    };
+
+    let area = frame.area();
+    frame.render_widget(Clear, area);
+
+    let block = Block::default()
+        .title(preview.path.display().to_string())
+        .borders(Borders::ALL)
+        .border_style(Style::default().fg(Color::Yellow));
+    let inner = block.inner(area);
+    frame.render_widget(block, area);
+
+    let rows = Layout::default()
+        .direction(Direction::Vertical)
+        .constraints([Constraint::Min(1), Constraint::Length(1)])
+        .split(inner);
+
+    let visible_height = rows[0].height as usize;
+    let end = (preview.scroll + visible_height).min(preview.lines.len());
+    let lines: Vec<Line<'static>> = preview.lines[preview.scroll..end]
+        .iter()
+        .cloned()
+        .map(Line::from)
+        .collect();
+
+    frame.render_widget(Paragraph::new(lines), rows[0]);
+    frame.render_widget(
+        Paragraph::new("F3/Esc close | Up/Down scroll").alignment(Alignment::Center),
+        rows[1],
+    );
 }
 
 fn render_transfer_dialog(frame: &mut Frame<'_>, app: &AppState) {
@@ -618,5 +655,33 @@ mod tests {
         let border_cell = &terminal.backend().buffer()[(cancel_button.x, cancel_button.y)];
 
         assert_eq!(border_cell.fg, Color::Yellow);
+    }
+
+    #[test]
+    fn preview_renders_file_title_and_text_lines() {
+        let temp = TempDir::new().expect("temp dir");
+        let mut app = AppState::new(Config::default(), temp.path().to_path_buf()).expect("app");
+        app.mode = InputMode::Preview;
+        app.preview = Some(crate::state::PreviewState::new(
+            temp.path().join("note.txt"),
+            "hello\nworld".to_string(),
+        ));
+
+        let backend = TestBackend::new(40, 8);
+        let mut terminal = Terminal::new(backend).expect("terminal");
+        terminal.draw(|frame| super::render(frame, &mut app)).expect("draw");
+
+        let buffer = terminal.backend().buffer();
+        let rendered: String = (0..buffer.area.height)
+            .flat_map(|y| {
+                (0..buffer.area.width)
+                    .map(move |x| buffer[(x, y)].symbol().to_string())
+                    .chain(std::iter::once("\n".to_string()))
+            })
+            .collect();
+
+        assert!(rendered.contains("note.txt"));
+        assert!(rendered.contains("hello"));
+        assert!(rendered.contains("world"));
     }
 }
