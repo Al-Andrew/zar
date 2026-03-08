@@ -177,7 +177,11 @@ fn render_transfer_dialog(frame: &mut Frame<'_>, app: &AppState) {
         Paragraph::new(format!(
             "{}: {}",
             dialog.operation.destination_label(),
-            dialog.destination
+            if dialog.operation.edits_destination() {
+                dialog.destination.clone()
+            } else {
+                dialog.source.display().to_string()
+            }
         )),
         input_row,
     );
@@ -190,11 +194,13 @@ fn render_transfer_dialog(frame: &mut Frame<'_>, app: &AppState) {
         },
     );
 
-    let cursor_x = input_row
-        .x
-        .saturating_add(dialog.operation.destination_label().len() as u16 + 2)
-        .saturating_add(dialog.destination[..dialog.cursor].chars().count() as u16);
-    frame.set_cursor_position((cursor_x, input_row.y));
+    if dialog.operation.edits_destination() {
+        let cursor_x = input_row
+            .x
+            .saturating_add(dialog.operation.destination_label().len() as u16 + 2)
+            .saturating_add(dialog.destination[..dialog.cursor].chars().count() as u16);
+        frame.set_cursor_position((cursor_x, input_row.y));
+    }
 }
 
 fn centered_rect(width_percent: u16, height: u16, area: Rect) -> Rect {
@@ -375,5 +381,34 @@ mod tests {
 
         assert!(rendered.contains("Create Directory"));
         assert!(rendered.contains("Path: /tmp/new-dir"));
+    }
+
+    #[test]
+    fn delete_dialog_renders_target_prompt() {
+        let temp = TempDir::new().expect("temp dir");
+        let mut app = AppState::new(Config::default(), temp.path().to_path_buf()).expect("app");
+        app.mode = InputMode::Transfer;
+        app.transfer = Some(TransferDialogState::new(
+            TransferOperation::Delete,
+            temp.path().join("victim.txt"),
+            String::new(),
+        ));
+
+        let backend = TestBackend::new(60, 12);
+        let mut terminal = Terminal::new(backend).expect("terminal");
+        terminal.draw(|frame| super::render(frame, &mut app)).expect("draw");
+
+        let buffer = terminal.backend().buffer();
+        let rendered: String = (0..buffer.area.height)
+            .flat_map(|y| {
+                (0..buffer.area.width)
+                    .map(move |x| buffer[(x, y)].symbol().to_string())
+                    .chain(std::iter::once("\n".to_string()))
+            })
+            .collect();
+
+        assert!(rendered.contains("Delete"));
+        assert!(rendered.contains("Target:"));
+        assert!(rendered.contains("victim.txt"));
     }
 }

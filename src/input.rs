@@ -21,6 +21,7 @@ pub enum Action {
     BeginCopy,
     BeginMove,
     BeginCreateDirectory,
+    BeginDelete,
     EnterCommandMode,
     EditCommand(CommandEditAction),
     EditTransfer(CommandEditAction),
@@ -74,6 +75,9 @@ impl KeyBindings {
         }
         if event.code == KeyCode::F(7) && event.modifiers.is_empty() {
             return Some(Action::BeginCreateDirectory);
+        }
+        if event.code == KeyCode::F(8) && event.modifiers.is_empty() {
+            return Some(Action::BeginDelete);
         }
         if event.code == KeyCode::Esc && event.modifiers.is_empty() {
             return Some(Action::ClearStatus);
@@ -181,6 +185,13 @@ mod tests {
                 InputMode::Normal
             ),
             Some(Action::BeginCreateDirectory)
+        );
+        assert_eq!(
+            bindings.resolve(
+                KeyEvent::new(KeyCode::F(8), KeyModifiers::NONE),
+                InputMode::Normal
+            ),
+            Some(Action::BeginDelete)
         );
     }
 }
