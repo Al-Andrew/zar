@@ -2,7 +2,7 @@ use ratatui::Frame;
 use ratatui::layout::{Constraint, Direction, Layout, Rect};
 use ratatui::style::{Color, Modifier, Style};
 use ratatui::text::{Line, Span};
-use ratatui::widgets::{Block, Borders, Paragraph};
+use ratatui::widgets::{Block, Borders, Clear, Paragraph};
 
 use crate::fs::{EntryKind, FileEntry};
 use crate::state::{ActivePane, AppState, InputMode, PaneState};
@@ -15,6 +15,10 @@ pub fn render(frame: &mut Frame<'_>, app: &mut AppState) {
 
     render_panes(frame, app, layout[0]);
     render_bottom_bar(frame, app, layout[1]);
+
+    if matches!(app.mode, InputMode::Transfer) {
+        render_transfer_dialog(frame, app);
+    }
 }
 
 fn render_panes(frame: &mut Frame<'_>, app: &mut AppState, area: Rect) {
@@ -99,7 +103,7 @@ fn render_bottom_bar(frame: &mut Frame<'_>, app: &AppState, area: Rect) {
     frame.render_widget(block, area);
 
     match app.mode {
-        InputMode::Normal => {
+        InputMode::Normal | InputMode::Transfer => {
             let slots = Layout::default()
                 .direction(Direction::Horizontal)
                 .constraints([Constraint::Ratio(1, 10); 10])
@@ -127,6 +131,93 @@ fn render_bottom_bar(frame: &mut Frame<'_>, app: &AppState, area: Rect) {
     }
 }
 
+fn render_transfer_dialog(frame: &mut Frame<'_>, app: &AppState) {
+    let Some(dialog) = app.transfer.as_ref() else {
+        return;
+    };
+
+    let area = centered_rect(70, 7, frame.area());
+    frame.render_widget(Clear, area);
+
+    let block = Block::default()
+        .title(dialog.operation.title())
+        .borders(Borders::ALL)
+        .border_style(Style::default().fg(Color::Yellow));
+    let inner = block.inner(area);
+    frame.render_widget(block, area);
+
+    let rows = Layout::default()
+        .direction(Direction::Vertical)
+        .constraints(if dialog.operation.shows_source() {
+            [
+                Constraint::Length(1),
+                Constraint::Length(1),
+                Constraint::Length(1),
+            ]
+        } else {
+            [
+                Constraint::Length(1),
+                Constraint::Length(1),
+                Constraint::Length(1),
+            ]
+        })
+        .split(inner);
+
+    let input_row = if dialog.operation.shows_source() {
+        frame.render_widget(
+            Paragraph::new(format!("From: {}", dialog.source.display())),
+            rows[0],
+        );
+        rows[1]
+    } else {
+        rows[0]
+    };
+
+    frame.render_widget(
+        Paragraph::new(format!(
+            "{}: {}",
+            dialog.operation.destination_label(),
+            dialog.destination
+        )),
+        input_row,
+    );
+    frame.render_widget(
+        Paragraph::new("Enter confirm | Esc cancel"),
+        if dialog.operation.shows_source() {
+            rows[2]
+        } else {
+            rows[1]
+        },
+    );
+
+    let cursor_x = input_row
+        .x
+        .saturating_add(dialog.operation.destination_label().len() as u16 + 2)
+        .saturating_add(dialog.destination[..dialog.cursor].chars().count() as u16);
+    frame.set_cursor_position((cursor_x, input_row.y));
+}
+
+fn centered_rect(width_percent: u16, height: u16, area: Rect) -> Rect {
+    let vertical = Layout::default()
+        .direction(Direction::Vertical)
+        .constraints([
+            Constraint::Fill(1),
+            Constraint::Length(height),
+            Constraint::Fill(1),
+        ])
+        .split(area);
+    let horizontal = Layout::default()
+        .direction(Direction::Horizontal)
+        .constraints([
+            Constraint::Percentage((100 - width_percent) / 2),
+            Constraint::Percentage(width_percent),
+            Constraint::Percentage((100 - width_percent) / 2),
+        ])
+        .split(vertical[1]);
+
+    horizontal[1]
+}
+
 #[cfg(test)]
 mod tests {
     use std::ffi::OsString;
@@ -141,7 +232,7 @@ mod tests {
     use super::render_entry;
     use crate::config::Config;
     use crate::fs::{EntryKind, FileEntry};
-    use crate::state::{ActivePane, AppState};
+    use crate::state::{ActivePane, AppState, InputMode, TransferDialogState, TransferOperation};
 
     fn test_entry(kind: EntryKind, name: &str) -> FileEntry {
         FileEntry {
@@ -228,5 +319,61 @@ mod tests {
                 assert_eq!(cell.symbol(), " ");
             }
         }
+    }
+
+    #[test]
+    fn transfer_dialog_renders_title_and_destination() {
+        let temp = TempDir::new().expect("temp dir");
+        let mut app = AppState::new(Config::default(), temp.path().to_path_buf()).expect("app");
+        app.mode = InputMode::Transfer;
+        app.transfer = Some(TransferDialogState::new(
+            TransferOperation::Copy,
+            temp.path().join("source.txt"),
+            "/tmp/dest".to_string(),
+        ));
+
+        let backend = TestBackend::new(60, 12);
+        let mut terminal = Terminal::new(backend).expect("terminal");
+        terminal.draw(|frame| super::render(frame, &mut app)).expect("draw");
+
+        let buffer = terminal.backend().buffer();
+        let rendered: String = (0..buffer.area.height)
+            .flat_map(|y| {
+                (0..buffer.area.width)
+                    .map(move |x| buffer[(x, y)].symbol().to_string())
+                    .chain(std::iter::once("\n".to_string()))
+            })
+            .collect();
+
+        assert!(rendered.contains("Copy File"));
+        assert!(rendered.contains("To: /tmp/dest"));
+    }
+
+    #[test]
+    fn create_directory_dialog_renders_path_prompt() {
+        let temp = TempDir::new().expect("temp dir");
+        let mut app = AppState::new(Config::default(), temp.path().to_path_buf()).expect("app");
+        app.mode = InputMode::Transfer;
+        app.transfer = Some(TransferDialogState::new(
+            TransferOperation::CreateDirectory,
+            temp.path().to_path_buf(),
+            "/tmp/new-dir".to_string(),
+        ));
+
+        let backend = TestBackend::new(60, 12);
+        let mut terminal = Terminal::new(backend).expect("terminal");
+        terminal.draw(|frame| super::render(frame, &mut app)).expect("draw");
+
+        let buffer = terminal.backend().buffer();
+        let rendered: String = (0..buffer.area.height)
+            .flat_map(|y| {
+                (0..buffer.area.width)
+                    .map(move |x| buffer[(x, y)].symbol().to_string())
+                    .chain(std::iter::once("\n".to_string()))
+            })
+            .collect();
+
+        assert!(rendered.contains("Create Directory"));
+        assert!(rendered.contains("Path: /tmp/new-dir"));
     }
 }
