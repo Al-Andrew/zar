@@ -10,8 +10,9 @@ mod ui;
 
 use std::io::{self, Stdout};
 use std::panic;
+use std::path::PathBuf;
 
-use anyhow::Result;
+use anyhow::{Result, bail};
 use crossterm::ExecutableCommand;
 use crossterm::terminal::{
     EnterAlternateScreen, LeaveAlternateScreen, disable_raw_mode, enable_raw_mode,
@@ -23,6 +24,7 @@ use crate::app::App;
 use crate::config::Config;
 
 fn main() -> Result<()> {
+    let (left_start_dir, right_start_dir) = parse_start_dir_args(std::env::args_os())?;
     let config = Config::load()?;
     for warning in &config.startup_warnings {
         eprintln!("config warning: {warning}");
@@ -33,7 +35,7 @@ fn main() -> Result<()> {
     let mut terminal = setup_terminal()?;
     let _guard = TerminalGuard;
 
-    let mut app = App::new(config)?;
+    let mut app = App::new_with_start_dirs(config, left_start_dir, right_start_dir)?;
     let result = app.run(&mut terminal);
 
     match result {
@@ -73,4 +75,70 @@ fn install_panic_hook() {
         let _ = stdout.execute(LeaveAlternateScreen);
         previous(panic_info);
     }));
+}
+
+fn parse_start_dir_args<I, S>(args: I) -> Result<(Option<PathBuf>, Option<PathBuf>)>
+where
+    I: IntoIterator<Item = S>,
+    S: Into<std::ffi::OsString>,
+{
+    let mut args = args.into_iter().map(Into::into);
+    let _program = args.next();
+    let left_start_dir = args.next().map(PathBuf::from);
+    let right_start_dir = args.next().map(PathBuf::from);
+
+    if args.next().is_some() {
+        bail!("usage: zar [LEFT_START_DIR] [RIGHT_START_DIR]");
+    }
+
+    Ok((left_start_dir, right_start_dir))
+}
+
+#[cfg(test)]
+mod tests {
+    use std::ffi::OsString;
+    use std::path::PathBuf;
+
+    use super::parse_start_dir_args;
+
+    #[test]
+    fn parse_start_dir_accepts_single_positional_path() {
+        let start_dirs = parse_start_dir_args([
+            OsString::from("zar"),
+            OsString::from("/home/aaldea"),
+        ])
+        .expect("parse");
+
+        assert_eq!(start_dirs, (Some(PathBuf::from("/home/aaldea")), None));
+    }
+
+    #[test]
+    fn parse_start_dir_accepts_two_positional_paths() {
+        let start_dirs = parse_start_dir_args([
+            OsString::from("zar"),
+            OsString::from("/tmp/one"),
+            OsString::from("/tmp/two"),
+        ])
+        .expect("parse");
+
+        assert_eq!(
+            start_dirs,
+            (
+                Some(PathBuf::from("/tmp/one")),
+                Some(PathBuf::from("/tmp/two"))
+            )
+        );
+    }
+
+    #[test]
+    fn parse_start_dir_rejects_more_than_two_positionals() {
+        let result = parse_start_dir_args([
+            OsString::from("zar"),
+            OsString::from("/tmp/one"),
+            OsString::from("/tmp/two"),
+            OsString::from("/tmp/three"),
+        ]);
+
+        assert!(result.is_err());
+    }
 }

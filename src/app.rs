@@ -24,8 +24,20 @@ pub struct App {
 
 impl App {
     pub fn new(config: Config) -> Result<Self> {
-        let cwd = resolve_start_dir()?;
-        let state = AppState::new(config, cwd)?;
+        Self::new_with_start_dirs(config, None, None)
+    }
+
+    pub fn new_with_start_dir(config: Config, start_dir: Option<PathBuf>) -> Result<Self> {
+        Self::new_with_start_dirs(config, start_dir, None)
+    }
+
+    pub fn new_with_start_dirs(
+        config: Config,
+        left_start_dir: Option<PathBuf>,
+        right_start_dir: Option<PathBuf>,
+    ) -> Result<Self> {
+        let (left_cwd, right_cwd) = resolve_start_dirs(left_start_dir, right_start_dir)?;
+        let state = AppState::new_with_dirs(config, left_cwd, right_cwd)?;
         Ok(Self { state })
     }
 
@@ -294,7 +306,40 @@ impl App {
     }
 }
 
-fn resolve_start_dir() -> Result<PathBuf> {
+fn resolve_start_dirs(
+    left_start_dir: Option<PathBuf>,
+    right_start_dir: Option<PathBuf>,
+) -> Result<(PathBuf, PathBuf)> {
+    let default_dir = resolve_default_start_dir()?;
+    let left_dir = match left_start_dir {
+        Some(path) => resolve_explicit_start_dir(path)?,
+        None => default_dir.clone(),
+    };
+    let right_dir = match right_start_dir {
+        Some(path) => resolve_explicit_start_dir(path)?,
+        None => default_dir,
+    };
+
+    Ok((left_dir, right_dir))
+}
+
+fn resolve_explicit_start_dir(start_dir: PathBuf) -> Result<PathBuf> {
+    let resolved = if start_dir.is_absolute() {
+        start_dir
+    } else {
+        std::env::current_dir()
+            .context("failed to resolve relative startup directory")?
+            .join(start_dir)
+    };
+
+    if !resolved.is_dir() {
+        anyhow::bail!("not a directory: {}", resolved.display());
+    }
+
+    Ok(resolved)
+}
+
+fn resolve_default_start_dir() -> Result<PathBuf> {
     match std::env::current_dir() {
         Ok(dir) => Ok(dir),
         Err(current_dir_error) => {
@@ -395,6 +440,39 @@ mod tests {
         assert_eq!(app.state.right.cwd, temp.path().to_path_buf());
 
         env::set_current_dir(previous).expect("restore cwd");
+    }
+
+    #[test]
+    fn startup_uses_explicit_start_directory_in_both_panes() {
+        let _guard = cwd_lock();
+        let temp = TempDir::new().expect("temp dir");
+        let target = temp.path().join("target");
+        fs::create_dir(&target).expect("target dir");
+        let previous = env::current_dir().expect("cwd");
+        env::set_current_dir(temp.path()).expect("set cwd");
+
+        let app = App::new_with_start_dir(Config::default(), Some(target.clone())).expect("app");
+
+        assert_eq!(app.state.left.cwd, target);
+        assert_eq!(app.state.right.cwd, temp.path().to_path_buf());
+
+        env::set_current_dir(previous).expect("restore cwd");
+    }
+
+    #[test]
+    fn startup_uses_explicit_directories_for_both_panes() {
+        let _guard = cwd_lock();
+        let temp = TempDir::new().expect("temp dir");
+        let left = temp.path().join("left");
+        let right = temp.path().join("right");
+        fs::create_dir(&left).expect("left dir");
+        fs::create_dir(&right).expect("right dir");
+
+        let app = App::new_with_start_dirs(Config::default(), Some(left.clone()), Some(right.clone()))
+            .expect("app");
+
+        assert_eq!(app.state.left.cwd, left);
+        assert_eq!(app.state.right.cwd, right);
     }
 
     #[test]

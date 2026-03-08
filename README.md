@@ -19,6 +19,18 @@ A cross-platform terminal file manager prototype in Rust.
 cargo run
 ```
 
+Open at a specific directory:
+
+```bash
+cargo run -- /home/aaldea
+```
+
+Open left and right panes at different directories:
+
+```bash
+cargo run -- /home/aaldea /tmp
+```
+
 ## Config
 
 Configuration is loaded from:

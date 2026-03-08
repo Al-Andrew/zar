@@ -251,8 +251,12 @@ pub struct AppState {
 
 impl AppState {
     pub fn new(config: Config, cwd: PathBuf) -> Result<Self> {
-        let left = PaneState::new(cwd.clone())?;
-        let right = PaneState::new(cwd.clone())?;
+        Self::new_with_dirs(config, cwd.clone(), cwd)
+    }
+
+    pub fn new_with_dirs(config: Config, left_cwd: PathBuf, right_cwd: PathBuf) -> Result<Self> {
+        let left = PaneState::new(left_cwd)?;
+        let right = PaneState::new(right_cwd)?;
         let status = if config.startup_warnings.is_empty() {
             StatusMessage::info(format!(
                 "Tab switch pane | Enter open | Backspace up | {} command | q quit",
