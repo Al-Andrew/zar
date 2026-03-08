@@ -13,6 +13,7 @@ use std::panic;
 use std::path::PathBuf;
 
 use anyhow::{Result, bail};
+use crossterm::event::{DisableMouseCapture, EnableMouseCapture};
 use crossterm::ExecutableCommand;
 use crossterm::terminal::{
     EnterAlternateScreen, LeaveAlternateScreen, disable_raw_mode, enable_raw_mode,
@@ -51,6 +52,7 @@ fn setup_terminal() -> Result<AppTerminal> {
 
     let mut stdout = io::stdout();
     stdout.execute(EnterAlternateScreen)?;
+    stdout.execute(EnableMouseCapture)?;
 
     let backend = CrosstermBackend::new(stdout);
     let terminal = Terminal::new(backend)?;
@@ -63,6 +65,7 @@ impl Drop for TerminalGuard {
     fn drop(&mut self) {
         let _ = disable_raw_mode();
         let mut stdout = io::stdout();
+        let _ = stdout.execute(DisableMouseCapture);
         let _ = stdout.execute(LeaveAlternateScreen);
     }
 }
@@ -72,6 +75,7 @@ fn install_panic_hook() {
     panic::set_hook(Box::new(move |panic_info| {
         let _ = disable_raw_mode();
         let mut stdout = io::stdout();
+        let _ = stdout.execute(DisableMouseCapture);
         let _ = stdout.execute(LeaveAlternateScreen);
         previous(panic_info);
     }));

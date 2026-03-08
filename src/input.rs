@@ -25,6 +25,10 @@ pub enum Action {
     EnterCommandMode,
     EditCommand(CommandEditAction),
     EditTransfer(CommandEditAction),
+    TransferFocusUp,
+    TransferFocusDown,
+    TransferFocusLeft,
+    TransferFocusRight,
     SubmitCommand,
     SubmitTransfer,
     CancelCommand,
@@ -123,14 +127,12 @@ impl KeyBindings {
         match event.code {
             KeyCode::Esc if event.modifiers.is_empty() => Some(Action::CancelTransfer),
             KeyCode::Enter if event.modifiers.is_empty() => Some(Action::SubmitTransfer),
+            KeyCode::Up if event.modifiers.is_empty() => Some(Action::TransferFocusUp),
+            KeyCode::Down if event.modifiers.is_empty() => Some(Action::TransferFocusDown),
+            KeyCode::Left if event.modifiers.is_empty() => Some(Action::TransferFocusLeft),
+            KeyCode::Right if event.modifiers.is_empty() => Some(Action::TransferFocusRight),
             KeyCode::Backspace if event.modifiers.is_empty() => {
                 Some(Action::EditTransfer(CommandEditAction::Backspace))
-            }
-            KeyCode::Left if event.modifiers.is_empty() => {
-                Some(Action::EditTransfer(CommandEditAction::MoveCursorLeft))
-            }
-            KeyCode::Right if event.modifiers.is_empty() => {
-                Some(Action::EditTransfer(CommandEditAction::MoveCursorRight))
             }
             KeyCode::Char(ch)
                 if event
@@ -192,6 +194,26 @@ mod tests {
                 InputMode::Normal
             ),
             Some(Action::BeginDelete)
+        );
+    }
+
+    #[test]
+    fn arrow_keys_navigate_transfer_dialog() {
+        let bindings = KeyBindings::default();
+
+        assert_eq!(
+            bindings.resolve(
+                KeyEvent::new(KeyCode::Up, KeyModifiers::NONE),
+                InputMode::Transfer
+            ),
+            Some(Action::TransferFocusUp)
+        );
+        assert_eq!(
+            bindings.resolve(
+                KeyEvent::new(KeyCode::Right, KeyModifiers::NONE),
+                InputMode::Transfer
+            ),
+            Some(Action::TransferFocusRight)
         );
     }
 }

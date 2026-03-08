@@ -4,7 +4,7 @@ use std::path::{Path, PathBuf};
 use std::time::Duration;
 
 use anyhow::{Context, Result};
-use crossterm::event;
+use crossterm::event::{self, MouseButton, MouseEvent, MouseEventKind};
 use directories::BaseDirs;
 use ratatui::Terminal;
 use ratatui::backend::CrosstermBackend;
@@ -14,7 +14,8 @@ use crate::config::Config;
 use crate::fs::{self, EntryKind};
 use crate::input::{Action, CommandEditAction, event_to_action};
 use crate::state::{
-    ActivePane, AppState, InputMode, StatusMessage, TransferDialogState, TransferOperation,
+    ActivePane, AppState, InputMode, StatusMessage, TransferControl, TransferDialogState,
+    TransferOperation,
 };
 use crate::ui;
 
@@ -47,10 +48,23 @@ impl App {
 
             if event::poll(Duration::from_millis(250))? {
                 let event = event::read()?;
-                if let Some(action) =
-                    event_to_action(&self.state.config.key_bindings, self.state.mode, event)
-                {
-                    self.handle_action(action)?;
+                match event {
+                    event::Event::Mouse(mouse_event) => {
+                        let size = terminal.size()?;
+                        self.handle_mouse(
+                            mouse_event,
+                            ratatui::layout::Rect::new(0, 0, size.width, size.height),
+                        )?;
+                    }
+                    other => {
+                        if let Some(action) = event_to_action(
+                            &self.state.config.key_bindings,
+                            self.state.mode,
+                            other,
+                        ) {
+                            self.handle_action(action)?;
+                        }
+                    }
                 }
             }
         }
@@ -99,6 +113,10 @@ impl App {
             }
             Action::EditCommand(edit) => self.edit_command(edit),
             Action::EditTransfer(edit) => self.edit_transfer(edit),
+            Action::TransferFocusUp => self.move_transfer_focus_up(),
+            Action::TransferFocusDown => self.move_transfer_focus_down(),
+            Action::TransferFocusLeft => self.move_transfer_focus_left(),
+            Action::TransferFocusRight => self.move_transfer_focus_right(),
             Action::SubmitCommand => self.submit_command(),
             Action::SubmitTransfer => self.submit_transfer(),
             Action::CancelCommand => {
@@ -216,7 +234,9 @@ impl App {
             return;
         };
 
-        if !transfer.operation.edits_destination() {
+        if !transfer.operation.edits_destination()
+            || transfer.focus != TransferControl::DestinationField
+        {
             return;
         }
 
@@ -236,6 +256,14 @@ impl App {
         let Some(dialog) = self.state.transfer.clone() else {
             return;
         };
+
+        if dialog.focus == TransferControl::CancelButton {
+            self.state.transfer = None;
+            self.state.mode = InputMode::Normal;
+            self.state
+                .set_status(StatusMessage::info("file operation cancelled"));
+            return;
+        }
 
         let result = match dialog.operation {
             TransferOperation::Copy | TransferOperation::Move | TransferOperation::CreateDirectory => {
@@ -303,6 +331,113 @@ impl App {
         self.state.left.refresh()?;
         self.state.right.refresh()?;
         Ok(())
+    }
+
+    fn handle_mouse(&mut self, event: MouseEvent, frame_area: ratatui::layout::Rect) -> Result<()> {
+        if self.state.mode != InputMode::Transfer {
+            return Ok(());
+        }
+
+        match event.kind {
+            MouseEventKind::Moved => {
+                let hovered =
+                    ui::transfer_dialog_hit_target(&self.state, frame_area, event.column, event.row);
+                if let Some(transfer) = self.state.transfer.as_mut() {
+                    transfer.hovered = hovered;
+                }
+            }
+            MouseEventKind::Up(MouseButton::Left) => {
+                if let Some(control) =
+                    ui::transfer_dialog_hit_target(&self.state, frame_area, event.column, event.row)
+                {
+                    if let Some(transfer) = self.state.transfer.as_mut() {
+                        transfer.focus = control;
+                        transfer.hovered = Some(control);
+                    }
+                    if control == TransferControl::ConfirmButton {
+                        self.handle_action(Action::SubmitTransfer)?;
+                    } else if control == TransferControl::CancelButton {
+                        self.handle_action(Action::CancelTransfer)?;
+                    }
+                }
+            }
+            _ => {}
+        }
+
+        Ok(())
+    }
+
+    fn move_transfer_focus_up(&mut self) {
+        let Some(transfer) = self.state.transfer.as_mut() else {
+            return;
+        };
+
+        transfer.focus = match transfer.focus {
+            TransferControl::SourceField => TransferControl::SourceField,
+            TransferControl::DestinationField => {
+                if transfer.operation.shows_source() {
+                    TransferControl::SourceField
+                } else {
+                    TransferControl::DestinationField
+                }
+            }
+            TransferControl::ConfirmButton | TransferControl::CancelButton => {
+                TransferControl::DestinationField
+            }
+        };
+        transfer.hovered = Some(transfer.focus);
+    }
+
+    fn move_transfer_focus_down(&mut self) {
+        let Some(transfer) = self.state.transfer.as_mut() else {
+            return;
+        };
+
+        transfer.focus = match transfer.focus {
+            TransferControl::SourceField => TransferControl::DestinationField,
+            TransferControl::DestinationField => TransferControl::ConfirmButton,
+            TransferControl::ConfirmButton => TransferControl::ConfirmButton,
+            TransferControl::CancelButton => TransferControl::CancelButton,
+        };
+        transfer.hovered = Some(transfer.focus);
+    }
+
+    fn move_transfer_focus_left(&mut self) {
+        let Some(transfer) = self.state.transfer.as_mut() else {
+            return;
+        };
+
+        match transfer.focus {
+            TransferControl::DestinationField if transfer.operation.edits_destination() => {
+                edit_text(
+                    &mut transfer.destination,
+                    &mut transfer.cursor,
+                    CommandEditAction::MoveCursorLeft,
+                );
+            }
+            TransferControl::CancelButton => transfer.focus = TransferControl::ConfirmButton,
+            _ => {}
+        }
+        transfer.hovered = Some(transfer.focus);
+    }
+
+    fn move_transfer_focus_right(&mut self) {
+        let Some(transfer) = self.state.transfer.as_mut() else {
+            return;
+        };
+
+        match transfer.focus {
+            TransferControl::DestinationField if transfer.operation.edits_destination() => {
+                edit_text(
+                    &mut transfer.destination,
+                    &mut transfer.cursor,
+                    CommandEditAction::MoveCursorRight,
+                );
+            }
+            TransferControl::ConfirmButton => transfer.focus = TransferControl::CancelButton,
+            _ => {}
+        }
+        transfer.hovered = Some(transfer.focus);
     }
 }
 
@@ -418,6 +553,7 @@ mod tests {
     use std::env;
     use std::fs;
 
+    use crossterm::event::{MouseButton, MouseEvent, MouseEventKind};
     use tempfile::TempDir;
 
     use crate::config::Config;
@@ -647,6 +783,72 @@ mod tests {
 
         assert_eq!(app.state.mode, InputMode::Normal);
         assert!(!left_dir.join("victim.txt").exists());
+
+        env::set_current_dir(previous).expect("restore cwd");
+    }
+
+    #[test]
+    fn clicking_transfer_cancel_button_closes_dialog() {
+        let _guard = cwd_lock();
+        let temp = TempDir::new().expect("temp dir");
+        let left_dir = temp.path().join("left");
+        let right_dir = temp.path().join("right");
+        fs::create_dir(&left_dir).expect("left dir");
+        fs::create_dir(&right_dir).expect("right dir");
+        fs::write(left_dir.join("report.txt"), b"report").expect("source file");
+
+        let previous = env::current_dir().expect("cwd");
+        env::set_current_dir(temp.path()).expect("set cwd");
+
+        let mut app = App::new(Config::default()).expect("app");
+        app.state.left.set_cwd(left_dir).expect("left cwd");
+        app.state.right.set_cwd(right_dir).expect("right cwd");
+        app.handle_action(Action::BeginCopy).expect("begin copy");
+
+        app.handle_mouse(
+            MouseEvent {
+                kind: MouseEventKind::Up(MouseButton::Left),
+                column: 36,
+                row: 9,
+                modifiers: crossterm::event::KeyModifiers::NONE,
+            },
+            ratatui::layout::Rect::new(0, 0, 60, 12),
+        )
+        .expect("click cancel");
+
+        assert_eq!(app.state.mode, InputMode::Normal);
+        assert!(app.state.transfer.is_none());
+
+        env::set_current_dir(previous).expect("restore cwd");
+    }
+
+    #[test]
+    fn arrow_keys_can_focus_cancel_button_and_enter_cancels() {
+        let _guard = cwd_lock();
+        let temp = TempDir::new().expect("temp dir");
+        let left_dir = temp.path().join("left");
+        let right_dir = temp.path().join("right");
+        fs::create_dir(&left_dir).expect("left dir");
+        fs::create_dir(&right_dir).expect("right dir");
+        fs::write(left_dir.join("report.txt"), b"report").expect("source file");
+
+        let previous = env::current_dir().expect("cwd");
+        env::set_current_dir(temp.path()).expect("set cwd");
+
+        let mut app = App::new(Config::default()).expect("app");
+        app.state.left.set_cwd(left_dir).expect("left cwd");
+        app.state.right.set_cwd(right_dir).expect("right cwd");
+        app.handle_action(Action::BeginCopy).expect("begin copy");
+
+        app.handle_action(Action::TransferFocusDown)
+            .expect("focus confirm");
+        app.handle_action(Action::TransferFocusRight)
+            .expect("focus cancel");
+        app.handle_action(Action::SubmitTransfer)
+            .expect("activate cancel");
+
+        assert_eq!(app.state.mode, InputMode::Normal);
+        assert!(app.state.transfer.is_none());
 
         env::set_current_dir(previous).expect("restore cwd");
     }

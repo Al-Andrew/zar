@@ -108,12 +108,22 @@ impl TransferOperation {
     }
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum TransferControl {
+    SourceField,
+    DestinationField,
+    ConfirmButton,
+    CancelButton,
+}
+
 #[derive(Debug, Clone)]
 pub struct TransferDialogState {
     pub operation: TransferOperation,
     pub source: PathBuf,
     pub destination: String,
     pub cursor: usize,
+    pub focus: TransferControl,
+    pub hovered: Option<TransferControl>,
 }
 
 impl TransferDialogState {
@@ -124,6 +134,12 @@ impl TransferDialogState {
             source,
             destination,
             cursor,
+            focus: if operation.edits_destination() {
+                TransferControl::DestinationField
+            } else {
+                TransferControl::ConfirmButton
+            },
+            hovered: None,
         }
     }
 }
