@@ -78,6 +78,7 @@ impl App {
             Action::BeginCopy => self.begin_transfer(TransferOperation::Copy),
             Action::BeginMove => self.begin_transfer(TransferOperation::Move),
             Action::BeginCreateDirectory => self.begin_create_directory(),
+            Action::BeginDelete => self.begin_delete(),
             Action::EnterCommandMode => {
                 self.state.mode = InputMode::Command;
                 self.state.command.clear();
@@ -153,6 +154,20 @@ impl App {
         self.state.mode = InputMode::Transfer;
     }
 
+    fn begin_delete(&mut self) {
+        let Some(entry) = self.state.active_pane().selected_entry().cloned() else {
+            self.state.set_status(StatusMessage::info("nothing selected"));
+            return;
+        };
+
+        self.state.transfer = Some(TransferDialogState::new(
+            TransferOperation::Delete,
+            entry.path,
+            String::new(),
+        ));
+        self.state.mode = InputMode::Transfer;
+    }
+
     fn open_selection(&mut self) {
         let Some(entry) = self.state.active_pane().selected_entry().cloned() else {
             self.state
@@ -189,6 +204,10 @@ impl App {
             return;
         };
 
+        if !transfer.operation.edits_destination() {
+            return;
+        }
+
         edit_text(&mut transfer.destination, &mut transfer.cursor, edit);
     }
 
@@ -206,21 +225,31 @@ impl App {
             return;
         };
 
-        let raw_destination = dialog.destination.trim();
-        if raw_destination.is_empty() {
-            self.state
-                .set_status(StatusMessage::error("destination cannot be empty"));
-            return;
-        }
-
-        let destination = self.resolve_transfer_destination(raw_destination, &dialog.source);
         let result = match dialog.operation {
-            TransferOperation::Copy => fs::copy_file(&dialog.source, &destination),
-            TransferOperation::Move => fs::move_file(&dialog.source, &destination),
-            TransferOperation::CreateDirectory => fs::create_directory(&destination),
+            TransferOperation::Copy | TransferOperation::Move | TransferOperation::CreateDirectory => {
+                let raw_destination = dialog.destination.trim();
+                if raw_destination.is_empty() {
+                    self.state
+                        .set_status(StatusMessage::error("destination cannot be empty"));
+                    return;
+                }
+
+                let destination = self.resolve_transfer_destination(raw_destination, &dialog.source);
+                let result = match dialog.operation {
+                    TransferOperation::Copy => fs::copy_file(&dialog.source, &destination),
+                    TransferOperation::Move => fs::move_file(&dialog.source, &destination),
+                    TransferOperation::CreateDirectory => fs::create_directory(&destination),
+                    TransferOperation::Delete => unreachable!("delete handled separately"),
+                };
+                (result, destination)
+            }
+            TransferOperation::Delete => (
+                fs::delete_entry(&dialog.source),
+                dialog.source.clone(),
+            ),
         };
 
-        match result {
+        match result.0 {
             Ok(()) => {
                 self.state.mode = InputMode::Normal;
                 self.state.transfer = None;
@@ -236,7 +265,7 @@ impl App {
                 self.state.set_status(StatusMessage::info(format!(
                     "{} {}",
                     dialog.operation.past_tense(),
-                    success_target(&dialog, &destination)
+                    success_target(&dialog, &result.1)
                 )));
             }
             Err(err) => self.state.set_status(StatusMessage::error(err.to_string())),
@@ -335,6 +364,7 @@ fn success_target(dialog: &TransferDialogState, destination: &Path) -> String {
             format!("{} to {}", display_name(&dialog.source), destination.display())
         }
         TransferOperation::CreateDirectory => destination.display().to_string(),
+        TransferOperation::Delete => display_name(&dialog.source),
     }
 }
 
@@ -511,6 +541,34 @@ mod tests {
 
         assert_eq!(app.state.mode, InputMode::Normal);
         assert!(left_dir.join("new-dir").is_dir());
+
+        env::set_current_dir(previous).expect("restore cwd");
+    }
+
+    #[test]
+    fn delete_dialog_removes_selected_entry() {
+        let _guard = cwd_lock();
+        let temp = TempDir::new().expect("temp dir");
+        let left_dir = temp.path().join("left");
+        fs::create_dir(&left_dir).expect("left dir");
+        fs::write(left_dir.join("victim.txt"), b"bye").expect("victim");
+
+        let previous = env::current_dir().expect("cwd");
+        env::set_current_dir(temp.path()).expect("set cwd");
+
+        let mut app = App::new(Config::default()).expect("app");
+        app.state.left.set_cwd(left_dir.clone()).expect("left cwd");
+
+        app.handle_action(Action::BeginDelete).expect("begin delete");
+
+        let dialog = app.state.transfer.clone().expect("transfer dialog");
+        assert_eq!(dialog.operation, TransferOperation::Delete);
+        assert_eq!(dialog.source, left_dir.join("victim.txt"));
+
+        app.handle_action(Action::SubmitTransfer).expect("submit delete");
+
+        assert_eq!(app.state.mode, InputMode::Normal);
+        assert!(!left_dir.join("victim.txt").exists());
 
         env::set_current_dir(previous).expect("restore cwd");
     }

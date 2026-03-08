@@ -109,6 +109,24 @@ pub fn create_directory(path: &Path) -> Result<()> {
     Ok(())
 }
 
+pub fn delete_entry(path: &Path) -> Result<()> {
+    if !path.exists() {
+        bail!("path does not exist: {}", path.display());
+    }
+
+    let metadata = fs::symlink_metadata(path)
+        .with_context(|| format!("failed to inspect {}", path.display()))?;
+    let file_type = metadata.file_type();
+
+    if file_type.is_dir() {
+        fs::remove_dir_all(path).with_context(|| format!("failed to delete {}", path.display()))?;
+    } else {
+        fs::remove_file(path).with_context(|| format!("failed to delete {}", path.display()))?;
+    }
+
+    Ok(())
+}
+
 fn compare_entries(left: &FileEntry, right: &FileEntry) -> Ordering {
     left.kind
         .is_directory()
@@ -134,7 +152,7 @@ mod tests {
 
     use tempfile::TempDir;
 
-    use super::{copy_file, create_directory, move_file, read_directory};
+    use super::{copy_file, create_directory, delete_entry, move_file, read_directory};
 
     #[test]
     fn sorts_directories_before_files_case_insensitively() {
@@ -184,5 +202,17 @@ mod tests {
         create_directory(&path).expect("create dir");
 
         assert!(path.is_dir());
+    }
+
+    #[test]
+    fn delete_entry_removes_directory_tree() {
+        let temp = TempDir::new().expect("temp dir");
+        let path = temp.path().join("tree");
+        fs::create_dir(&path).expect("dir");
+        fs::write(path.join("child.txt"), b"x").expect("child");
+
+        delete_entry(&path).expect("delete");
+
+        assert!(!path.exists());
     }
 }

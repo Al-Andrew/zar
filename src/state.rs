@@ -60,6 +60,7 @@ pub enum TransferOperation {
     Copy,
     Move,
     CreateDirectory,
+    Delete,
 }
 
 impl TransferOperation {
@@ -68,6 +69,7 @@ impl TransferOperation {
             Self::Copy => "copy",
             Self::Move => "move",
             Self::CreateDirectory => "create directory",
+            Self::Delete => "delete",
         }
     }
 
@@ -76,6 +78,7 @@ impl TransferOperation {
             Self::Copy => "Copy File",
             Self::Move => "Move File",
             Self::CreateDirectory => "Create Directory",
+            Self::Delete => "Delete",
         }
     }
 
@@ -83,11 +86,16 @@ impl TransferOperation {
         match self {
             Self::Copy | Self::Move => "To",
             Self::CreateDirectory => "Path",
+            Self::Delete => "Target",
         }
     }
 
     pub fn shows_source(self) -> bool {
-        !matches!(self, Self::CreateDirectory)
+        matches!(self, Self::Copy | Self::Move)
+    }
+
+    pub fn edits_destination(self) -> bool {
+        matches!(self, Self::Copy | Self::Move | Self::CreateDirectory)
     }
 
     pub fn past_tense(self) -> &'static str {
@@ -95,6 +103,7 @@ impl TransferOperation {
             Self::Copy => "copied",
             Self::Move => "moved",
             Self::CreateDirectory => "created",
+            Self::Delete => "deleted",
         }
     }
 }
