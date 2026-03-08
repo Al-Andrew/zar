@@ -15,6 +15,7 @@ pub enum ActivePane {
 pub enum InputMode {
     Normal,
     Command,
+    Transfer,
 }
 
 #[derive(Debug, Clone)]
@@ -51,6 +52,70 @@ impl CommandState {
     pub fn clear(&mut self) {
         self.buffer.clear();
         self.cursor = 0;
+    }
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum TransferOperation {
+    Copy,
+    Move,
+    CreateDirectory,
+}
+
+impl TransferOperation {
+    pub fn label(self) -> &'static str {
+        match self {
+            Self::Copy => "copy",
+            Self::Move => "move",
+            Self::CreateDirectory => "create directory",
+        }
+    }
+
+    pub fn title(self) -> &'static str {
+        match self {
+            Self::Copy => "Copy File",
+            Self::Move => "Move File",
+            Self::CreateDirectory => "Create Directory",
+        }
+    }
+
+    pub fn destination_label(self) -> &'static str {
+        match self {
+            Self::Copy | Self::Move => "To",
+            Self::CreateDirectory => "Path",
+        }
+    }
+
+    pub fn shows_source(self) -> bool {
+        !matches!(self, Self::CreateDirectory)
+    }
+
+    pub fn past_tense(self) -> &'static str {
+        match self {
+            Self::Copy => "copied",
+            Self::Move => "moved",
+            Self::CreateDirectory => "created",
+        }
+    }
+}
+
+#[derive(Debug, Clone)]
+pub struct TransferDialogState {
+    pub operation: TransferOperation,
+    pub source: PathBuf,
+    pub destination: String,
+    pub cursor: usize,
+}
+
+impl TransferDialogState {
+    pub fn new(operation: TransferOperation, source: PathBuf, destination: String) -> Self {
+        let cursor = destination.len();
+        Self {
+            operation,
+            source,
+            destination,
+            cursor,
+        }
     }
 }
 
@@ -169,6 +234,7 @@ pub struct AppState {
     pub active_pane: ActivePane,
     pub mode: InputMode,
     pub command: CommandState,
+    pub transfer: Option<TransferDialogState>,
     pub status: StatusMessage,
     pub should_quit: bool,
     pub config: Config,
@@ -193,6 +259,7 @@ impl AppState {
             active_pane: ActivePane::Left,
             mode: InputMode::Normal,
             command: CommandState::new(config.key_bindings.enter_command_mode.clone()),
+            transfer: None,
             status,
             should_quit: false,
             config,
@@ -210,6 +277,13 @@ impl AppState {
         match self.active_pane {
             ActivePane::Left => &mut self.left,
             ActivePane::Right => &mut self.right,
+        }
+    }
+
+    pub fn inactive_pane(&self) -> &PaneState {
+        match self.active_pane {
+            ActivePane::Left => &self.right,
+            ActivePane::Right => &self.left,
         }
     }
 

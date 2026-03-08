@@ -3,7 +3,7 @@ use std::ffi::OsString;
 use std::fs;
 use std::path::{Path, PathBuf};
 
-use anyhow::{Context, Result};
+use anyhow::{Context, Result, bail};
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum EntryKind {
@@ -57,6 +57,58 @@ pub fn read_directory(path: &Path) -> Result<Vec<FileEntry>> {
     Ok(entries)
 }
 
+pub fn copy_file(source: &Path, destination: &Path) -> Result<()> {
+    if !source.is_file() {
+        bail!("not a file: {}", source.display());
+    }
+    if destination.exists() {
+        bail!("destination already exists: {}", destination.display());
+    }
+
+    fs::copy(source, destination).with_context(|| {
+        format!(
+            "failed to copy {} to {}",
+            source.display(),
+            destination.display()
+        )
+    })?;
+    Ok(())
+}
+
+pub fn move_file(source: &Path, destination: &Path) -> Result<()> {
+    if !source.is_file() {
+        bail!("not a file: {}", source.display());
+    }
+    if destination.exists() {
+        bail!("destination already exists: {}", destination.display());
+    }
+
+    match fs::rename(source, destination) {
+        Ok(()) => Ok(()),
+        Err(_) => {
+            fs::copy(source, destination).with_context(|| {
+                format!(
+                    "failed to move {} to {}",
+                    source.display(),
+                    destination.display()
+                )
+            })?;
+            fs::remove_file(source)
+                .with_context(|| format!("failed to remove {}", source.display()))?;
+            Ok(())
+        }
+    }
+}
+
+pub fn create_directory(path: &Path) -> Result<()> {
+    if path.exists() {
+        bail!("destination already exists: {}", path.display());
+    }
+
+    fs::create_dir(path).with_context(|| format!("failed to create {}", path.display()))?;
+    Ok(())
+}
+
 fn compare_entries(left: &FileEntry, right: &FileEntry) -> Ordering {
     left.kind
         .is_directory()
@@ -82,7 +134,7 @@ mod tests {
 
     use tempfile::TempDir;
 
-    use super::read_directory;
+    use super::{copy_file, create_directory, move_file, read_directory};
 
     #[test]
     fn sorts_directories_before_files_case_insensitively() {
@@ -96,5 +148,41 @@ mod tests {
         let names: Vec<_> = entries.iter().map(|entry| entry.display_name()).collect();
 
         assert_eq!(names, vec!["alpha", "Zoo", "aardvark.txt", "Beta.txt"]);
+    }
+
+    #[test]
+    fn copy_file_creates_new_destination_file() {
+        let temp = TempDir::new().expect("temp dir");
+        let source = temp.path().join("source.txt");
+        let destination = temp.path().join("dest.txt");
+        fs::write(&source, b"hello").expect("source");
+
+        copy_file(&source, &destination).expect("copy");
+
+        assert_eq!(fs::read(&source).expect("read source"), b"hello");
+        assert_eq!(fs::read(&destination).expect("read destination"), b"hello");
+    }
+
+    #[test]
+    fn move_file_relocates_source_file() {
+        let temp = TempDir::new().expect("temp dir");
+        let source = temp.path().join("source.txt");
+        let destination = temp.path().join("dest.txt");
+        fs::write(&source, b"hello").expect("source");
+
+        move_file(&source, &destination).expect("move");
+
+        assert!(!source.exists());
+        assert_eq!(fs::read(&destination).expect("read destination"), b"hello");
+    }
+
+    #[test]
+    fn create_directory_makes_new_directory() {
+        let temp = TempDir::new().expect("temp dir");
+        let path = temp.path().join("new-dir");
+
+        create_directory(&path).expect("create dir");
+
+        assert!(path.is_dir());
     }
 }
