@@ -9,10 +9,13 @@ use crate::state::{
     ActivePane, AppState, InputMode, PaneState, TransferControl, TransferDialogState,
 };
 
+const FOOTER_BUTTON_COUNT: usize = 10;
+const FOOTER_HEIGHT: u16 = 3;
+
 pub fn render(frame: &mut Frame<'_>, app: &mut AppState) {
     let layout = Layout::default()
         .direction(Direction::Vertical)
-        .constraints([Constraint::Min(3), Constraint::Length(3)])
+        .constraints([Constraint::Min(3), Constraint::Length(FOOTER_HEIGHT)])
         .split(frame.area());
 
     render_panes(frame, app, layout[0]);
@@ -23,6 +26,23 @@ pub fn render(frame: &mut Frame<'_>, app: &mut AppState) {
         InputMode::Preview => render_preview(frame, app),
         _ => {}
     }
+}
+
+pub fn bottom_bar_hit_target(app: &AppState, frame_area: Rect, x: u16, y: u16) -> Option<usize> {
+    if app.mode != InputMode::Normal {
+        return None;
+    }
+
+    let area = bottom_bar_area(frame_area);
+    let slots = bottom_bar_button_areas(area);
+    slots.iter().enumerate().find_map(|(index, slot)| {
+        let label = bottom_bar_buttons()[index];
+        if !label.is_empty() && rect_contains(*slot, x, y) {
+            Some(index)
+        } else {
+            None
+        }
+    })
 }
 
 pub fn transfer_dialog_hit_target(
@@ -127,32 +147,39 @@ fn render_entry(entry: &FileEntry, selected: bool) -> Line<'static> {
 }
 
 fn render_bottom_bar(frame: &mut Frame<'_>, app: &AppState, area: Rect) {
-    let block = Block::default().borders(Borders::ALL);
-    let inner = block.inner(area);
-    frame.render_widget(block, area);
-
     match app.mode {
         InputMode::Normal | InputMode::Transfer | InputMode::Preview => {
-            let slots = Layout::default()
-                .direction(Direction::Horizontal)
-                .constraints([Constraint::Ratio(1, 10); 10])
-                .split(inner);
+            for (index, slot) in bottom_bar_button_areas(area).into_iter().enumerate() {
+                let label = bottom_bar_buttons()[index];
+                if label.is_empty() {
+                    continue;
+                }
 
-            for (index, slot) in slots.iter().enumerate() {
-                let borders = if index + 1 < slots.len() {
-                    Borders::RIGHT
-                } else {
-                    Borders::NONE
-                };
-                frame.render_widget(Block::default().borders(borders), *slot);
+                render_dialog_button(
+                    frame,
+                    slot,
+                    label,
+                    app.mode == InputMode::Normal && app.footer_hovered == Some(index),
+                );
             }
         }
         InputMode::Command => {
-            let prompt = format!("cmd> {}", app.command.buffer);
-            frame.render_widget(Paragraph::new(prompt), inner);
+            let command_area = area;
+            let block = Block::default().borders(Borders::ALL);
+            let inner = block.inner(command_area);
+            frame.render_widget(block, command_area);
 
-            let cursor_x = inner
+            let prompt = format!("cmd> {}", app.command.buffer);
+            let prompt_width = prompt.chars().count() as u16;
+            let prompt_x = inner
                 .x
+                .saturating_add(inner.width.saturating_sub(prompt_width) / 2);
+            frame.render_widget(
+                Paragraph::new(prompt.clone()).alignment(Alignment::Center),
+                inner,
+            );
+
+            let cursor_x = prompt_x
                 .saturating_add(5)
                 .saturating_add(app.command.buffer[..app.command.cursor].chars().count() as u16);
             frame.set_cursor_position((cursor_x, inner.y));
@@ -315,6 +342,38 @@ fn render_transfer_field(
     frame.render_widget(Paragraph::new(value), inner);
 }
 
+fn bottom_bar_buttons() -> [&'static str; FOOTER_BUTTON_COUNT] {
+    [
+        "",
+        "",
+        "View (F3)",
+        "",
+        "Copy (F5)",
+        "Move (F6)",
+        "Mkdir (F7)",
+        "Delete (F8)",
+        "",
+        "",
+    ]
+}
+
+fn bottom_bar_area(frame_area: Rect) -> Rect {
+    Layout::default()
+        .direction(Direction::Vertical)
+        .constraints([Constraint::Min(3), Constraint::Length(FOOTER_HEIGHT)])
+        .split(frame_area)[1]
+}
+
+fn bottom_bar_button_areas(area: Rect) -> Vec<Rect> {
+    Layout::default()
+        .direction(Direction::Horizontal)
+        .constraints([Constraint::Ratio(1, FOOTER_BUTTON_COUNT as u32); FOOTER_BUTTON_COUNT])
+        .split(area)
+        .iter()
+        .copied()
+        .collect()
+}
+
 fn transfer_control_highlighted(dialog: &TransferDialogState, control: TransferControl) -> bool {
     dialog.focus == control || dialog.hovered == Some(control)
 }
@@ -426,7 +485,10 @@ mod tests {
     use ratatui::style::{Color, Modifier, Stylize};
     use tempfile::TempDir;
 
-    use super::{render_entry, transfer_dialog_hit_target, transfer_dialog_layout};
+    use super::{
+        bottom_bar_buttons, bottom_bar_hit_target, render_entry, transfer_dialog_hit_target,
+        transfer_dialog_layout,
+    };
     use crate::config::Config;
     use crate::fs::{EntryKind, FileEntry};
     use crate::state::{
@@ -497,27 +559,116 @@ mod tests {
     }
 
     #[test]
-    fn normal_mode_bottom_bar_renders_empty_ten_slot_layout() {
+    fn normal_mode_bottom_bar_renders_action_buttons() {
         let temp = TempDir::new().expect("temp dir");
         let app = AppState::new(Config::default(), temp.path().to_path_buf()).expect("app");
 
-        let backend = TestBackend::new(22, 3);
+        let backend = TestBackend::new(140, 3);
         let mut terminal = Terminal::new(backend).expect("terminal");
         terminal
             .draw(|frame| super::render_bottom_bar(frame, &app, frame.area()))
             .expect("draw");
 
         let buffer = terminal.backend().buffer();
-        let separator_columns = [2_u16, 4, 6, 8, 10, 12, 14, 16, 18];
+        let rendered: String = (0..buffer.area.height)
+            .flat_map(|y| {
+                (0..buffer.area.width)
+                    .map(move |x| buffer[(x, y)].symbol().to_string())
+                    .chain(std::iter::once("\n".to_string()))
+            })
+            .collect();
 
-        for x in 1..21 {
-            let cell = &buffer[(x, 1)];
-            if separator_columns.contains(&x) {
-                assert_eq!(cell.symbol(), "│");
-            } else {
-                assert_eq!(cell.symbol(), " ");
-            }
-        }
+        assert!(!rendered.contains("Cmd (/)"));
+        assert!(!rendered.contains("Open (Ent)"));
+        assert!(rendered.contains("View (F3)"));
+        assert!(rendered.contains("Copy (F5)"));
+        assert!(rendered.contains("Move (F6)"));
+        assert!(rendered.contains("Mkdir (F7)"));
+        assert!(rendered.contains("Delete (F8)"));
+    }
+
+    #[test]
+    fn bottom_bar_uses_f_key_slots_only() {
+        let labels = bottom_bar_buttons();
+
+        assert_eq!(labels[0], "");
+        assert_eq!(labels[1], "");
+        assert_eq!(labels[2], "View (F3)");
+        assert_eq!(labels[3], "");
+        assert_eq!(labels[4], "Copy (F5)");
+        assert_eq!(labels[5], "Move (F6)");
+        assert_eq!(labels[6], "Mkdir (F7)");
+        assert_eq!(labels[7], "Delete (F8)");
+        assert_eq!(labels[8], "");
+        assert_eq!(labels[9], "");
+    }
+
+    #[test]
+    fn bottom_bar_hit_target_ignores_empty_slots_and_maps_f_buttons() {
+        let temp = TempDir::new().expect("temp dir");
+        let app = AppState::new(Config::default(), temp.path().to_path_buf()).expect("app");
+
+        assert_eq!(
+            bottom_bar_hit_target(&app, Rect::new(0, 0, 120, 20), 6, 18),
+            None
+        );
+        assert_eq!(
+            bottom_bar_hit_target(&app, Rect::new(0, 0, 120, 20), 30, 18),
+            Some(2)
+        );
+        assert_eq!(
+            bottom_bar_hit_target(&app, Rect::new(0, 0, 120, 20), 50, 18),
+            Some(4)
+        );
+    }
+
+    #[test]
+    fn hovered_bottom_bar_button_uses_highlighted_border() {
+        let temp = TempDir::new().expect("temp dir");
+        let mut app = AppState::new(Config::default(), temp.path().to_path_buf()).expect("app");
+        app.footer_hovered = Some(4);
+
+        let backend = TestBackend::new(140, 3);
+        let mut terminal = Terminal::new(backend).expect("terminal");
+        terminal
+            .draw(|frame| super::render_bottom_bar(frame, &app, frame.area()))
+            .expect("draw");
+
+        let buffer = terminal.backend().buffer();
+        assert_eq!(buffer[(56, 0)].fg, Color::Yellow);
+    }
+
+    #[test]
+    fn command_mode_bottom_bar_renders_centered_prompt() {
+        let temp = TempDir::new().expect("temp dir");
+        let mut app = AppState::new(Config::default(), temp.path().to_path_buf()).expect("app");
+        app.mode = InputMode::Command;
+        app.command.buffer = "ls".to_string();
+        app.command.cursor = app.command.buffer.len();
+
+        let backend = TestBackend::new(80, 3);
+        let mut terminal = Terminal::new(backend).expect("terminal");
+        terminal
+            .draw(|frame| super::render_bottom_bar(frame, &app, frame.area()))
+            .expect("draw");
+
+        let buffer = terminal.backend().buffer();
+        let rendered: String = (0..buffer.area.height)
+            .flat_map(|y| {
+                (0..buffer.area.width)
+                    .map(move |x| buffer[(x, y)].symbol().to_string())
+                    .chain(std::iter::once("\n".to_string()))
+            })
+            .collect();
+        let middle_row: String = (0..buffer.area.width)
+            .map(|x| buffer[(x, 1)].symbol().to_string())
+            .collect();
+
+        assert!(rendered.contains("cmd> ls"));
+        assert_eq!(buffer[(1, 1)].symbol(), " ");
+        let prompt_start = middle_row.find("cmd> ls").expect("prompt in middle row");
+        assert!(prompt_start > 1);
+        assert!(prompt_start < 70);
     }
 
     #[test]

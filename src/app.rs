@@ -377,34 +377,55 @@ impl App {
     }
 
     fn handle_mouse(&mut self, event: MouseEvent, frame_area: ratatui::layout::Rect) -> Result<()> {
-        if self.state.mode != InputMode::Transfer {
-            return Ok(());
-        }
-
-        match event.kind {
-            MouseEventKind::Moved => {
-                let hovered =
-                    ui::transfer_dialog_hit_target(&self.state, frame_area, event.column, event.row);
-                if let Some(transfer) = self.state.transfer.as_mut() {
-                    transfer.hovered = hovered;
+        match self.state.mode {
+            InputMode::Normal => match event.kind {
+                MouseEventKind::Moved => {
+                    self.state.footer_hovered =
+                        ui::bottom_bar_hit_target(&self.state, frame_area, event.column, event.row);
                 }
-            }
-            MouseEventKind::Up(MouseButton::Left) => {
-                if let Some(control) =
-                    ui::transfer_dialog_hit_target(&self.state, frame_area, event.column, event.row)
-                {
+                MouseEventKind::Up(MouseButton::Left) => {
+                    let hovered =
+                        ui::bottom_bar_hit_target(&self.state, frame_area, event.column, event.row);
+                    self.state.footer_hovered = hovered;
+                    if let Some(action) = hovered.and_then(footer_button_action) {
+                        self.handle_action(action)?;
+                    }
+                }
+                _ => {}
+            },
+            InputMode::Transfer => match event.kind {
+                MouseEventKind::Moved => {
+                    let hovered = ui::transfer_dialog_hit_target(
+                        &self.state,
+                        frame_area,
+                        event.column,
+                        event.row,
+                    );
                     if let Some(transfer) = self.state.transfer.as_mut() {
-                        transfer.focus = control;
-                        transfer.hovered = Some(control);
-                    }
-                    if control == TransferControl::ConfirmButton {
-                        self.handle_action(Action::SubmitTransfer)?;
-                    } else if control == TransferControl::CancelButton {
-                        self.handle_action(Action::CancelTransfer)?;
+                        transfer.hovered = hovered;
                     }
                 }
-            }
-            _ => {}
+                MouseEventKind::Up(MouseButton::Left) => {
+                    if let Some(control) = ui::transfer_dialog_hit_target(
+                        &self.state,
+                        frame_area,
+                        event.column,
+                        event.row,
+                    ) {
+                        if let Some(transfer) = self.state.transfer.as_mut() {
+                            transfer.focus = control;
+                            transfer.hovered = Some(control);
+                        }
+                        if control == TransferControl::ConfirmButton {
+                            self.handle_action(Action::SubmitTransfer)?;
+                        } else if control == TransferControl::CancelButton {
+                            self.handle_action(Action::CancelTransfer)?;
+                        }
+                    }
+                }
+                _ => {}
+            },
+            InputMode::Command | InputMode::Preview => {}
         }
 
         Ok(())
@@ -481,6 +502,17 @@ impl App {
             _ => {}
         }
         transfer.hovered = Some(transfer.focus);
+    }
+}
+
+fn footer_button_action(slot: usize) -> Option<Action> {
+    match slot {
+        2 => Some(Action::BeginPreview),
+        4 => Some(Action::BeginCopy),
+        5 => Some(Action::BeginMove),
+        6 => Some(Action::BeginCreateDirectory),
+        7 => Some(Action::BeginDelete),
+        _ => None,
     }
 }
 
@@ -918,6 +950,43 @@ mod tests {
 
         assert_eq!(app.state.mode, InputMode::Normal);
         assert!(app.state.preview.is_none());
+
+        env::set_current_dir(previous).expect("restore cwd");
+    }
+
+    #[test]
+    fn clicking_footer_copy_button_opens_copy_dialog() {
+        let _guard = cwd_lock();
+        let temp = TempDir::new().expect("temp dir");
+        let left_dir = temp.path().join("left");
+        let right_dir = temp.path().join("right");
+        fs::create_dir(&left_dir).expect("left dir");
+        fs::create_dir(&right_dir).expect("right dir");
+        fs::write(left_dir.join("report.txt"), b"report").expect("source file");
+
+        let previous = env::current_dir().expect("cwd");
+        env::set_current_dir(temp.path()).expect("set cwd");
+
+        let mut app = App::new(Config::default()).expect("app");
+        app.state.left.set_cwd(left_dir.clone()).expect("left cwd");
+        app.state.right.set_cwd(right_dir.clone()).expect("right cwd");
+
+        app.handle_mouse(
+            MouseEvent {
+                kind: MouseEventKind::Up(MouseButton::Left),
+                column: 50,
+                row: 17,
+                modifiers: crossterm::event::KeyModifiers::NONE,
+            },
+            ratatui::layout::Rect::new(0, 0, 120, 20),
+        )
+        .expect("click footer copy");
+
+        assert_eq!(app.state.mode, InputMode::Transfer);
+        assert_eq!(
+            app.state.transfer.as_ref().expect("transfer").operation,
+            TransferOperation::Copy
+        );
 
         env::set_current_dir(previous).expect("restore cwd");
     }
