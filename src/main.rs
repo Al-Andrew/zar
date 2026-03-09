@@ -2,19 +2,23 @@ mod app;
 mod commands;
 mod config;
 mod fs;
+mod history;
 mod input;
+mod secrets;
+mod source;
 mod state;
 #[cfg(test)]
 mod test_support;
 mod ui;
+mod vfs;
 
 use std::io::{self, Stdout};
 use std::panic;
 use std::path::PathBuf;
 
 use anyhow::{Result, bail};
-use crossterm::event::{DisableMouseCapture, EnableMouseCapture};
 use crossterm::ExecutableCommand;
+use crossterm::event::{DisableMouseCapture, EnableMouseCapture};
 use crossterm::terminal::{
     EnterAlternateScreen, LeaveAlternateScreen, disable_raw_mode, enable_raw_mode,
 };
@@ -107,11 +111,9 @@ mod tests {
 
     #[test]
     fn parse_start_dir_accepts_single_positional_path() {
-        let start_dirs = parse_start_dir_args([
-            OsString::from("zar"),
-            OsString::from("/home/aaldea"),
-        ])
-        .expect("parse");
+        let start_dirs =
+            parse_start_dir_args([OsString::from("zar"), OsString::from("/home/aaldea")])
+                .expect("parse");
 
         assert_eq!(start_dirs, (Some(PathBuf::from("/home/aaldea")), None));
     }

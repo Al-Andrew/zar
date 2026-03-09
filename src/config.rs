@@ -1,10 +1,11 @@
+use std::collections::BTreeMap;
 use std::fs;
 use std::path::{Path, PathBuf};
 
 use anyhow::{Context, Result};
 use crossterm::event::{KeyCode, KeyEvent, KeyModifiers};
 use directories::ProjectDirs;
-use serde::Deserialize;
+use serde::{Deserialize, Serialize};
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum ConfigurableKey {
@@ -76,6 +77,10 @@ impl ConfigurableKey {
             Self::Right => "right".to_string(),
         }
     }
+
+    pub fn as_config_value(&self) -> String {
+        self.label()
+    }
 }
 
 #[derive(Debug, Clone)]
@@ -107,12 +112,17 @@ impl Default for KeyBindings {
 pub struct Config {
     pub key_bindings: KeyBindings,
     pub startup_warnings: Vec<String>,
+    pub sources: SavedSources,
 }
 
 impl Config {
     pub fn load() -> Result<Self> {
-        let path = config_path()?;
+        let path = config_dir()?.join("config.toml");
         Self::load_from_path(&path)
+    }
+
+    pub fn load_from_dir(dir: &Path) -> Result<Self> {
+        Self::load_from_path(&dir.join("config.toml"))
     }
 
     pub fn load_from_path(path: &Path) -> Result<Self> {
@@ -231,7 +241,16 @@ impl Config {
         Self {
             key_bindings: bindings,
             startup_warnings: warnings,
+            sources: SavedSources::from(file.sources.unwrap_or_default()),
         }
+    }
+
+    pub fn save_to_dir(&self, dir: &Path) -> Result<()> {
+        fs::create_dir_all(dir).with_context(|| format!("failed to create {}", dir.display()))?;
+        let path = dir.join("config.toml");
+        let body = toml::to_string_pretty(&ConfigFileOut::from(self))
+            .context("failed to serialize config.toml")?;
+        fs::write(&path, body).with_context(|| format!("failed to write {}", path.display()))
     }
 }
 
@@ -240,8 +259,90 @@ impl Default for Config {
         Self {
             key_bindings: KeyBindings::default(),
             startup_warnings: Vec::new(),
+            sources: SavedSources::default(),
         }
     }
+}
+
+#[derive(Debug, Clone, Default)]
+pub struct SavedSources {
+    pub local: BTreeMap<String, LocalSourceProfile>,
+    pub ftp: BTreeMap<String, FtpSourceProfile>,
+    pub smb: BTreeMap<String, SmbSourceProfile>,
+    pub ssh: BTreeMap<String, SshSourceProfile>,
+}
+
+impl From<SourcesConfig> for SavedSources {
+    fn from(value: SourcesConfig) -> Self {
+        Self {
+            local: value.local,
+            ftp: value.ftp,
+            smb: value.smb,
+            ssh: value.ssh,
+        }
+    }
+}
+
+#[derive(Debug, Clone, Deserialize, Serialize, PartialEq, Eq)]
+pub struct LocalSourceProfile {
+    pub label: String,
+    pub path: PathBuf,
+}
+
+#[derive(Debug, Clone, Deserialize, Serialize, PartialEq, Eq)]
+pub struct FtpSourceProfile {
+    pub label: String,
+    pub host: String,
+    #[serde(default = "default_ftp_port")]
+    pub port: u16,
+    pub username: String,
+    #[serde(default = "default_remote_root")]
+    pub initial_path: String,
+}
+
+#[derive(Debug, Clone, Deserialize, Serialize, PartialEq, Eq)]
+pub struct SmbSourceProfile {
+    pub label: String,
+    pub server: String,
+    pub share: String,
+    pub username: String,
+    #[serde(default)]
+    pub workgroup: Option<String>,
+    #[serde(default = "default_remote_root")]
+    pub initial_path: String,
+}
+
+#[derive(Debug, Clone, Deserialize, Serialize, PartialEq, Eq)]
+pub struct SshSourceProfile {
+    pub label: String,
+    pub host: String,
+    #[serde(default = "default_ssh_port")]
+    pub port: u16,
+    pub username: String,
+    #[serde(default = "default_remote_root")]
+    pub initial_path: String,
+    pub auth: SshAuthMethod,
+    #[serde(default)]
+    pub key_path: Option<PathBuf>,
+}
+
+#[derive(Debug, Clone, Copy, Deserialize, Serialize, PartialEq, Eq)]
+#[serde(rename_all = "snake_case")]
+pub enum SshAuthMethod {
+    Password,
+    KeyFile,
+}
+
+fn default_ftp_port() -> u16 {
+    21
+}
+
+fn default_ssh_port() -> u16 {
+    22
+}
+
+fn default_remote_root() -> String {
+    "/".to_string()
 }
 
 fn parse_override(
@@ -265,16 +366,65 @@ fn parse_override(
     }
 }
 
-fn config_path() -> Result<PathBuf> {
+#[derive(Debug, Serialize)]
+struct ConfigFileOut {
+    keys: KeysConfigOut,
+    sources: SourcesConfigOut,
+}
+
+impl From<&Config> for ConfigFileOut {
+    fn from(config: &Config) -> Self {
+        Self {
+            keys: KeysConfigOut {
+                enter_command_mode: config.key_bindings.enter_command_mode.as_config_value(),
+                quit: config.key_bindings.quit.as_config_value(),
+                switch_pane: config.key_bindings.switch_pane.as_config_value(),
+                move_up: config.key_bindings.move_up.as_config_value(),
+                move_down: config.key_bindings.move_down.as_config_value(),
+                open: config.key_bindings.open.as_config_value(),
+                parent: config.key_bindings.parent.as_config_value(),
+            },
+            sources: SourcesConfigOut {
+                local: config.sources.local.clone(),
+                ftp: config.sources.ftp.clone(),
+                smb: config.sources.smb.clone(),
+                ssh: config.sources.ssh.clone(),
+            },
+        }
+    }
+}
+
+#[derive(Debug, Serialize)]
+struct KeysConfigOut {
+    enter_command_mode: String,
+    quit: String,
+    switch_pane: String,
+    move_up: String,
+    move_down: String,
+    open: String,
+    parent: String,
+}
+
+#[derive(Debug, Serialize)]
+struct SourcesConfigOut {
+    local: BTreeMap<String, LocalSourceProfile>,
+    ftp: BTreeMap<String, FtpSourceProfile>,
+    smb: BTreeMap<String, SmbSourceProfile>,
+    ssh: BTreeMap<String, SshSourceProfile>,
+}
+
+pub fn config_dir() -> Result<PathBuf> {
     let project_dirs =
         ProjectDirs::from("", "", "zar").context("failed to resolve config directory")?;
-    Ok(project_dirs.config_dir().join("config.toml"))
+    Ok(project_dirs.config_dir().to_path_buf())
 }
 
 #[derive(Debug, Deserialize)]
 struct ConfigFile {
     #[serde(default)]
     keys: Option<KeysConfig>,
+    #[serde(default)]
+    sources: Option<SourcesConfig>,
 }
 
 #[derive(Debug, Deserialize, Default)]
@@ -288,13 +438,26 @@ struct KeysConfig {
     parent: Option<String>,
 }
 
+#[derive(Debug, Deserialize, Default)]
+struct SourcesConfig {
+    #[serde(default)]
+    local: BTreeMap<String, LocalSourceProfile>,
+    #[serde(default)]
+    ftp: BTreeMap<String, FtpSourceProfile>,
+    #[serde(default)]
+    smb: BTreeMap<String, SmbSourceProfile>,
+    #[serde(default)]
+    ssh: BTreeMap<String, SshSourceProfile>,
+}
+
 #[cfg(test)]
 mod tests {
     use std::fs;
+    use std::path::PathBuf;
 
     use tempfile::TempDir;
 
-    use super::{Config, ConfigurableKey};
+    use super::{Config, ConfigurableKey, FtpSourceProfile, LocalSourceProfile, SshAuthMethod};
 
     #[test]
     fn missing_config_uses_defaults() {
@@ -305,6 +468,7 @@ mod tests {
             config.key_bindings.enter_command_mode,
             ConfigurableKey::Char('/')
         );
+        assert!(config.sources.ftp.is_empty());
     }
 
     #[test]
@@ -346,5 +510,85 @@ enter_command_mode = "spacebar"
             ConfigurableKey::Char('/')
         );
         assert!(!config.startup_warnings.is_empty());
+    }
+
+    #[test]
+    fn parses_saved_source_profiles() {
+        let temp = TempDir::new().expect("temp dir");
+        let path = temp.path().join("config.toml");
+        fs::write(
+            &path,
+            r#"
+[sources.local.home]
+label = "Home"
+path = "/home/test"
+
+[sources.ftp.archive]
+label = "Archive"
+host = "ftp.example.com"
+username = "alice"
+initial_path = "/incoming"
+
+[sources.smb.media]
+label = "Media"
+server = "smb://nas"
+share = "/tv"
+username = "alice"
+workgroup = "WORK"
+initial_path = "/shows"
+
+[sources.ssh.prod]
+label = "Prod"
+host = "prod.example.com"
+username = "deploy"
+auth = "key_file"
+key_path = "/home/test/.ssh/id_ed25519"
+initial_path = "/var/www"
+"#,
+        )
+        .expect("write config");
+
+        let config = Config::load_from_path(&path).expect("config");
+        assert_eq!(
+            config.sources.local["home"].path,
+            PathBuf::from("/home/test")
+        );
+        assert_eq!(config.sources.ftp["archive"].port, 21);
+        assert_eq!(config.sources.smb["media"].share, "/tv");
+        assert_eq!(config.sources.ssh["prod"].auth, SshAuthMethod::KeyFile);
+    }
+
+    #[test]
+    fn saves_config_with_sources_and_keys() {
+        let temp = TempDir::new().expect("temp dir");
+        let mut config = Config::default();
+        config.key_bindings.enter_command_mode = ConfigurableKey::Char(':');
+        config.sources.local.insert(
+            "home".to_string(),
+            LocalSourceProfile {
+                label: "Home".to_string(),
+                path: PathBuf::from("/tmp/home"),
+            },
+        );
+        config.sources.ftp.insert(
+            "archive".to_string(),
+            FtpSourceProfile {
+                label: "Archive".to_string(),
+                host: "ftp.example.com".to_string(),
+                port: 21,
+                username: "alice".to_string(),
+                initial_path: "/incoming".to_string(),
+            },
+        );
+
+        config.save_to_dir(temp.path()).expect("save config");
+        let reloaded = Config::load_from_dir(temp.path()).expect("reload config");
+
+        assert_eq!(
+            reloaded.key_bindings.enter_command_mode,
+            ConfigurableKey::Char(':')
+        );
+        assert_eq!(reloaded.sources.local["home"].label, "Home");
+        assert_eq!(reloaded.sources.ftp["archive"].initial_path, "/incoming");
     }
 }

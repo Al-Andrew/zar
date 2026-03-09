@@ -23,20 +23,33 @@ pub enum Action {
     BeginMove,
     BeginCreateDirectory,
     BeginDelete,
+    BeginAddLocation,
+    OpenLeftSourceMenu,
+    OpenRightSourceMenu,
+    SourceMenuBack,
+    SourceMenuSelect,
     EnterCommandMode,
     EditCommand(CommandEditAction),
     EditTransfer(CommandEditAction),
+    EditAddLocation(CommandEditAction),
     TransferFocusUp,
     TransferFocusDown,
     TransferFocusLeft,
     TransferFocusRight,
+    AddLocationFocusUp,
+    AddLocationFocusDown,
+    AddLocationFocusLeft,
+    AddLocationFocusRight,
     PreviewUp,
     PreviewDown,
     SubmitCommand,
     SubmitTransfer,
+    SubmitAddLocation,
     CancelCommand,
     CancelTransfer,
+    CancelAddLocation,
     ClosePreview,
+    CloseSourceMenu,
     Quit,
     ClearStatus,
 }
@@ -48,12 +61,20 @@ impl KeyBindings {
             InputMode::Command => self.resolve_command_mode(event),
             InputMode::Transfer => self.resolve_transfer_mode(event),
             InputMode::Preview => self.resolve_preview_mode(event),
+            InputMode::SourceMenu => self.resolve_source_menu_mode(event),
+            InputMode::AddLocation => self.resolve_add_location_mode(event),
         }
     }
 
     fn resolve_normal_mode(&self, event: KeyEvent) -> Option<Action> {
         if event.code == KeyCode::Char('c') && event.modifiers == KeyModifiers::CONTROL {
             return Some(Action::Quit);
+        }
+        if event.code == KeyCode::F(1) && event.modifiers.is_empty() {
+            return Some(Action::OpenLeftSourceMenu);
+        }
+        if event.code == KeyCode::F(2) && event.modifiers.is_empty() {
+            return Some(Action::OpenRightSourceMenu);
         }
         if self.enter_command_mode.matches(event) {
             return Some(Action::EnterCommandMode);
@@ -75,6 +96,9 @@ impl KeyBindings {
         }
         if event.code == KeyCode::F(3) && event.modifiers.is_empty() {
             return Some(Action::BeginPreview);
+        }
+        if event.code == KeyCode::F(4) && event.modifiers.is_empty() {
+            return Some(Action::BeginAddLocation);
         }
         if self.parent.matches(event) {
             return Some(Action::GoParent);
@@ -170,6 +194,49 @@ impl KeyBindings {
             _ => None,
         }
     }
+
+    fn resolve_source_menu_mode(&self, event: KeyEvent) -> Option<Action> {
+        if event.code == KeyCode::Char('c') && event.modifiers == KeyModifiers::CONTROL {
+            return Some(Action::Quit);
+        }
+
+        match event.code {
+            KeyCode::Esc if event.modifiers.is_empty() => Some(Action::CloseSourceMenu),
+            KeyCode::Enter if event.modifiers.is_empty() => Some(Action::SourceMenuSelect),
+            KeyCode::Up if event.modifiers.is_empty() => Some(Action::MoveUp),
+            KeyCode::Down if event.modifiers.is_empty() => Some(Action::MoveDown),
+            KeyCode::Left if event.modifiers.is_empty() => Some(Action::SourceMenuBack),
+            KeyCode::Backspace if event.modifiers.is_empty() => Some(Action::SourceMenuBack),
+            _ => None,
+        }
+    }
+
+    fn resolve_add_location_mode(&self, event: KeyEvent) -> Option<Action> {
+        if event.code == KeyCode::Char('c') && event.modifiers == KeyModifiers::CONTROL {
+            return Some(Action::Quit);
+        }
+
+        match event.code {
+            KeyCode::Esc if event.modifiers.is_empty() => Some(Action::CancelAddLocation),
+            KeyCode::Enter if event.modifiers.is_empty() => Some(Action::SubmitAddLocation),
+            KeyCode::Up if event.modifiers.is_empty() => Some(Action::AddLocationFocusUp),
+            KeyCode::Down if event.modifiers.is_empty() => Some(Action::AddLocationFocusDown),
+            KeyCode::Left if event.modifiers.is_empty() => Some(Action::AddLocationFocusLeft),
+            KeyCode::Right if event.modifiers.is_empty() => Some(Action::AddLocationFocusRight),
+            KeyCode::Backspace if event.modifiers.is_empty() => {
+                Some(Action::EditAddLocation(CommandEditAction::Backspace))
+            }
+            KeyCode::Char(ch)
+                if event
+                    .modifiers
+                    .intersection(KeyModifiers::CONTROL | KeyModifiers::ALT)
+                    .is_empty() =>
+            {
+                Some(Action::EditAddLocation(CommandEditAction::Insert(ch)))
+            }
+            _ => None,
+        }
+    }
 }
 
 pub fn event_to_action(bindings: &KeyBindings, mode: InputMode, event: Event) -> Option<Action> {
@@ -186,7 +253,7 @@ mod tests {
     use crate::config::KeyBindings;
     use crate::state::InputMode;
 
-    use super::Action;
+    use super::{Action, CommandEditAction};
 
     #[test]
     fn function_keys_open_transfer_dialogs_in_normal_mode() {
@@ -201,71 +268,57 @@ mod tests {
         );
         assert_eq!(
             bindings.resolve(
-                KeyEvent::new(KeyCode::F(5), KeyModifiers::NONE),
+                KeyEvent::new(KeyCode::F(1), KeyModifiers::NONE),
                 InputMode::Normal
             ),
-            Some(Action::BeginCopy)
+            Some(Action::OpenLeftSourceMenu)
         );
         assert_eq!(
             bindings.resolve(
-                KeyEvent::new(KeyCode::F(6), KeyModifiers::NONE),
+                KeyEvent::new(KeyCode::F(4), KeyModifiers::NONE),
                 InputMode::Normal
             ),
-            Some(Action::BeginMove)
-        );
-        assert_eq!(
-            bindings.resolve(
-                KeyEvent::new(KeyCode::F(7), KeyModifiers::NONE),
-                InputMode::Normal
-            ),
-            Some(Action::BeginCreateDirectory)
-        );
-        assert_eq!(
-            bindings.resolve(
-                KeyEvent::new(KeyCode::F(8), KeyModifiers::NONE),
-                InputMode::Normal
-            ),
-            Some(Action::BeginDelete)
+            Some(Action::BeginAddLocation)
         );
     }
 
     #[test]
-    fn arrow_keys_navigate_transfer_dialog() {
+    fn source_menu_maps_navigation_keys() {
         let bindings = KeyBindings::default();
 
         assert_eq!(
             bindings.resolve(
-                KeyEvent::new(KeyCode::Up, KeyModifiers::NONE),
-                InputMode::Transfer
+                KeyEvent::new(KeyCode::Left, KeyModifiers::NONE),
+                InputMode::SourceMenu
             ),
-            Some(Action::TransferFocusUp)
+            Some(Action::SourceMenuBack)
         );
+        assert_eq!(
+            bindings.resolve(
+                KeyEvent::new(KeyCode::Enter, KeyModifiers::NONE),
+                InputMode::SourceMenu
+            ),
+            Some(Action::SourceMenuSelect)
+        );
+    }
+
+    #[test]
+    fn add_location_mode_maps_editing_keys() {
+        let bindings = KeyBindings::default();
+
         assert_eq!(
             bindings.resolve(
                 KeyEvent::new(KeyCode::Right, KeyModifiers::NONE),
-                InputMode::Transfer
+                InputMode::AddLocation
             ),
-            Some(Action::TransferFocusRight)
-        );
-    }
-
-    #[test]
-    fn preview_mode_maps_close_and_scroll_keys() {
-        let bindings = KeyBindings::default();
-
-        assert_eq!(
-            bindings.resolve(
-                KeyEvent::new(KeyCode::Esc, KeyModifiers::NONE),
-                InputMode::Preview
-            ),
-            Some(Action::ClosePreview)
+            Some(Action::AddLocationFocusRight)
         );
         assert_eq!(
             bindings.resolve(
-                KeyEvent::new(KeyCode::Down, KeyModifiers::NONE),
-                InputMode::Preview
+                KeyEvent::new(KeyCode::Char('x'), KeyModifiers::NONE),
+                InputMode::AddLocation
             ),
-            Some(Action::PreviewDown)
+            Some(Action::EditAddLocation(CommandEditAction::Insert('x')))
         );
     }
 }

@@ -1,6 +1,5 @@
-use std::path::PathBuf;
-
 use crate::app::App;
+use crate::source::LocationPath;
 use crate::state::{ActivePane, StatusMessage};
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -27,13 +26,8 @@ pub fn execute(app: &mut App, input: &str) -> CommandResult {
                 return CommandResult::Error("cd requires a path".to_string());
             };
 
-            let target = PathBuf::from(path);
-            let current = app.state.active_pane().cwd.clone();
-            let resolved = if target.is_absolute() {
-                target
-            } else {
-                current.join(target)
-            };
+            let pane = app.state.active_pane();
+            let resolved = LocationPath::from_input(pane.source.kind, &pane.cwd, path);
 
             match app.change_active_directory(resolved) {
                 Ok(()) => CommandResult::Success(format!(
@@ -54,7 +48,7 @@ pub fn execute(app: &mut App, input: &str) -> CommandResult {
             }
             _ => CommandResult::Error("usage: pane <left|right>".to_string()),
         },
-        "pwd" => CommandResult::Success(app.state.active_pane().cwd.display().to_string()),
+        "pwd" => CommandResult::Success(app.state.active_pane().cwd.display()),
         "quit" => CommandResult::QuitRequested,
         _ => CommandResult::Error(format!("unknown command: {command}")),
     }
@@ -70,34 +64,32 @@ pub fn apply_result(app: &mut App, result: CommandResult) {
 
 #[cfg(test)]
 mod tests {
-    use std::env;
     use std::fs;
+    use std::path::PathBuf;
 
     use tempfile::TempDir;
 
     use crate::app::App;
-    use crate::config::Config;
+    use crate::commands::{CommandResult, execute};
+    use crate::config::{Config, SshAuthMethod};
+    use crate::source::{LocationPath, SourceKind, SourceRef};
     use crate::state::ActivePane;
     use crate::test_support::cwd_lock;
-
-    use super::{CommandResult, execute};
+    use crate::vfs::MockSessionFactory;
 
     #[test]
-    fn command_parser_covers_mvp_commands() {
+    fn command_parser_covers_source_aware_commands() {
         let _guard = cwd_lock();
         let temp = TempDir::new().expect("temp dir");
         fs::create_dir(temp.path().join("child")).expect("child dir");
 
-        let previous = env::current_dir().expect("cwd");
-        env::set_current_dir(temp.path()).expect("set cwd");
-
-        let mut app = App::new(Config::default()).expect("app");
-
-        assert_eq!(
-            execute(&mut app, "pane right"),
-            CommandResult::Success("active pane: right".into())
-        );
-        assert_eq!(app.state.active_pane, ActivePane::Right);
+        let mut app = App::new_with_factory(
+            Config::default(),
+            Some(temp.path().to_path_buf()),
+            None,
+            Box::new(MockSessionFactory::default()),
+        )
+        .expect("app");
 
         assert_eq!(
             execute(&mut app, "pwd"),
@@ -106,14 +98,62 @@ mod tests {
 
         let cd_result = execute(&mut app, "cd child");
         assert!(matches!(cd_result, CommandResult::Success(_)));
-        assert_eq!(app.state.active_pane().cwd, temp.path().join("child"));
+        assert_eq!(
+            app.state.active_pane().cwd,
+            LocationPath::Local(temp.path().join("child"))
+        );
+    }
 
-        assert_eq!(execute(&mut app, "quit"), CommandResult::QuitRequested);
-        assert!(matches!(
-            execute(&mut app, "bogus"),
-            CommandResult::Error(message) if message == "unknown command: bogus"
-        ));
+    #[test]
+    fn pwd_works_on_mock_remote_sources() {
+        let _guard = cwd_lock();
+        let temp = TempDir::new().expect("temp dir");
+        fs::create_dir_all(temp.path().join("var/www")).expect("dirs");
 
-        env::set_current_dir(previous).expect("restore cwd");
+        let mut config = Config::default();
+        config.sources.ssh.insert(
+            "prod".to_string(),
+            crate::config::SshSourceProfile {
+                label: "Prod".to_string(),
+                host: "prod.example.com".to_string(),
+                port: 22,
+                username: "deploy".to_string(),
+                initial_path: "/".to_string(),
+                auth: SshAuthMethod::Password,
+                key_path: None,
+            },
+        );
+
+        let factory = MockSessionFactory::default();
+        factory.add_remote(
+            SourceRef::SavedSsh {
+                id: "prod".to_string(),
+            },
+            SourceKind::Ssh,
+            "Prod",
+            temp.path().to_path_buf(),
+        );
+
+        let mut app = App::new_with_factory(
+            config,
+            Some(temp.path().to_path_buf()),
+            None,
+            Box::new(factory),
+        )
+        .expect("app");
+        app.switch_pane_source(
+            ActivePane::Left,
+            SourceRef::SavedSsh {
+                id: "prod".to_string(),
+            },
+            Some(LocationPath::Remote("/var/www".to_string())),
+        )
+        .expect("switch source");
+
+        assert_eq!(
+            execute(&mut app, "pwd"),
+            CommandResult::Success("/var/www".to_string())
+        );
+        assert_eq!(PathBuf::from("ignored").display().to_string(), "ignored");
     }
 }

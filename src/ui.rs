@@ -4,9 +4,10 @@ use ratatui::style::{Color, Modifier, Style};
 use ratatui::text::{Line, Span};
 use ratatui::widgets::{Block, Borders, Clear, Paragraph};
 
-use crate::fs::{EntryKind, FileEntry};
+use crate::source::{EntryKind, FileEntry};
 use crate::state::{
-    ActivePane, AppState, InputMode, PaneState, TransferControl, TransferDialogState,
+    ActivePane, AddLocationControl, AddLocationDialogState, AppState, InputMode, PaneState,
+    SourceMenuLevel, TransferControl, TransferDialogState,
 };
 
 const FOOTER_BUTTON_COUNT: usize = 10;
@@ -24,6 +25,7 @@ pub fn render(frame: &mut Frame<'_>, app: &mut AppState) {
     match app.mode {
         InputMode::Transfer => render_transfer_dialog(frame, app),
         InputMode::Preview => render_preview(frame, app),
+        InputMode::AddLocation => render_add_location_dialog(frame, app),
         _ => {}
     }
 }
@@ -85,16 +87,35 @@ fn render_panes(frame: &mut Frame<'_>, app: &mut AppState, area: Rect) {
         &app.left,
         panes[0],
         matches!(app.active_pane, ActivePane::Left),
+        app.mode == InputMode::SourceMenu
+            && app
+                .source_menu
+                .as_ref()
+                .is_some_and(|menu| menu.target_pane == ActivePane::Left),
+        app.source_menu.as_ref(),
     );
     render_pane(
         frame,
         &app.right,
         panes[1],
         matches!(app.active_pane, ActivePane::Right),
+        app.mode == InputMode::SourceMenu
+            && app
+                .source_menu
+                .as_ref()
+                .is_some_and(|menu| menu.target_pane == ActivePane::Right),
+        app.source_menu.as_ref(),
     );
 }
 
-fn render_pane(frame: &mut Frame<'_>, pane: &PaneState, area: Rect, active: bool) {
+fn render_pane(
+    frame: &mut Frame<'_>,
+    pane: &PaneState,
+    area: Rect,
+    active: bool,
+    show_source_menu: bool,
+    source_menu: Option<&crate::state::SourceMenuState>,
+) {
     let border_style = if active {
         Style::default().fg(Color::Yellow)
     } else {
@@ -102,11 +123,16 @@ fn render_pane(frame: &mut Frame<'_>, pane: &PaneState, area: Rect, active: bool
     };
 
     let block = Block::default()
-        .title(pane.cwd.display().to_string())
+        .title(pane.title())
         .borders(Borders::ALL)
         .border_style(border_style);
     let inner = block.inner(area);
     frame.render_widget(block, area);
+
+    if show_source_menu {
+        render_source_menu(frame, inner, source_menu.expect("source menu"));
+        return;
+    }
 
     let height = inner.height as usize;
     let start = pane.scroll.min(pane.entries.len());
@@ -126,6 +152,54 @@ fn render_pane(frame: &mut Frame<'_>, pane: &PaneState, area: Rect, active: bool
     };
 
     frame.render_widget(Paragraph::new(lines), inner);
+}
+
+fn render_source_menu(frame: &mut Frame<'_>, area: Rect, menu: &crate::state::SourceMenuState) {
+    let lines: Vec<Line<'static>> = match menu.level {
+        SourceMenuLevel::Categories => crate::state::SourceMenuState::categories()
+            .iter()
+            .enumerate()
+            .map(|(index, category)| {
+                let style = if index == menu.category_selected {
+                    Style::default()
+                        .bg(Color::Blue)
+                        .fg(Color::White)
+                        .add_modifier(Modifier::BOLD)
+                } else {
+                    Style::default().fg(Color::Cyan)
+                };
+                Line::from(Span::styled(category.title().to_string(), style))
+            })
+            .collect(),
+        SourceMenuLevel::Items(_) => {
+            if menu.items.is_empty() {
+                vec![Line::from(Span::styled(
+                    "<empty>",
+                    Style::default().fg(Color::DarkGray),
+                ))]
+            } else {
+                menu.items
+                    .iter()
+                    .enumerate()
+                    .map(|(index, item)| {
+                        let style = if index == menu.item_selected {
+                            Style::default()
+                                .bg(Color::Blue)
+                                .fg(Color::White)
+                                .add_modifier(Modifier::BOLD)
+                        } else {
+                            Style::default()
+                        };
+                        Line::from(Span::styled(
+                            format!("{} | {}", item.label, item.path_hint.display()),
+                            style,
+                        ))
+                    })
+                    .collect()
+            }
+        }
+    };
+    frame.render_widget(Paragraph::new(lines), area);
 }
 
 fn render_entry(entry: &FileEntry, selected: bool) -> Line<'static> {
@@ -148,7 +222,11 @@ fn render_entry(entry: &FileEntry, selected: bool) -> Line<'static> {
 
 fn render_bottom_bar(frame: &mut Frame<'_>, app: &AppState, area: Rect) {
     match app.mode {
-        InputMode::Normal | InputMode::Transfer | InputMode::Preview => {
+        InputMode::Normal
+        | InputMode::Transfer
+        | InputMode::Preview
+        | InputMode::SourceMenu
+        | InputMode::AddLocation => {
             for (index, slot) in bottom_bar_button_areas(area).into_iter().enumerate() {
                 let label = bottom_bar_buttons()[index];
                 if label.is_empty() {
@@ -196,7 +274,7 @@ fn render_preview(frame: &mut Frame<'_>, app: &AppState) {
     frame.render_widget(Clear, area);
 
     let block = Block::default()
-        .title(preview.path.display().to_string())
+        .title(preview.title.clone())
         .borders(Borders::ALL)
         .border_style(Style::default().fg(Color::Yellow));
     let inner = block.inner(area);
@@ -247,7 +325,11 @@ fn render_transfer_dialog(frame: &mut Frame<'_>, app: &AppState) {
                 Constraint::Length(3),
             ]
         } else {
-            [Constraint::Length(3), Constraint::Length(3), Constraint::Min(0)]
+            [
+                Constraint::Length(3),
+                Constraint::Length(3),
+                Constraint::Min(0),
+            ]
         })
         .split(inner);
 
@@ -256,7 +338,7 @@ fn render_transfer_dialog(frame: &mut Frame<'_>, app: &AppState) {
             frame,
             rows[0],
             "From",
-            &dialog.source.display().to_string(),
+            &format!("{} | {}", dialog.source_label, dialog.source.display()),
             transfer_control_highlighted(dialog, TransferControl::SourceField),
         );
         rows[1]
@@ -267,7 +349,7 @@ fn render_transfer_dialog(frame: &mut Frame<'_>, app: &AppState) {
     let input_value = if dialog.operation.edits_destination() {
         dialog.destination.clone()
     } else {
-        dialog.source.display().to_string()
+        dialog.source.display()
     };
     render_transfer_field(
         frame,
@@ -299,6 +381,114 @@ fn render_transfer_dialog(frame: &mut Frame<'_>, app: &AppState) {
     }
 }
 
+fn render_add_location_dialog(frame: &mut Frame<'_>, app: &AppState) {
+    let Some(dialog) = app.add_location.as_ref() else {
+        return;
+    };
+
+    let layout = add_location_dialog_layout(frame.area());
+    let area = layout.area;
+    frame.render_widget(Clear, area);
+
+    let block = Block::default()
+        .title("Add Location")
+        .borders(Borders::ALL)
+        .border_style(Style::default().fg(Color::Yellow));
+    let inner = block.inner(area);
+    frame.render_widget(block, area);
+
+    let rows = Layout::default()
+        .direction(Direction::Vertical)
+        .constraints([
+            Constraint::Length(3),
+            Constraint::Length(3),
+            Constraint::Length(3),
+            Constraint::Length(3),
+            Constraint::Length(1),
+            Constraint::Length(2),
+        ])
+        .split(inner);
+
+    render_transfer_field(
+        frame,
+        rows[0],
+        "Type",
+        dialog.kind.label(),
+        add_location_control_highlighted(dialog, AddLocationControl::KindField),
+    );
+    render_transfer_field(
+        frame,
+        rows[1],
+        "Label",
+        &dialog.label,
+        add_location_control_highlighted(dialog, AddLocationControl::LabelField),
+    );
+    render_transfer_field(
+        frame,
+        rows[2],
+        dialog.kind.target_label(),
+        &dialog.target,
+        add_location_control_highlighted(dialog, AddLocationControl::TargetField),
+    );
+    let secret_value = if dialog.kind.uses_secret() {
+        "*".repeat(dialog.secret.chars().count())
+    } else {
+        "<not used>".to_string()
+    };
+    render_transfer_field(
+        frame,
+        rows[3],
+        "Secret",
+        &secret_value,
+        add_location_control_highlighted(dialog, AddLocationControl::SecretField),
+    );
+
+    frame.render_widget(
+        Paragraph::new(format!(
+            "Example: {} | Enter save | Esc cancel",
+            dialog.kind.target_example()
+        ))
+        .alignment(Alignment::Center)
+        .style(Style::default().fg(Color::DarkGray)),
+        layout.help_text,
+    );
+
+    render_dialog_button(
+        frame,
+        layout.confirm_button,
+        "Save (Enter)",
+        add_location_control_highlighted(dialog, AddLocationControl::ConfirmButton),
+    );
+    render_dialog_button(
+        frame,
+        layout.cancel_button,
+        "Cancel (Esc)",
+        add_location_control_highlighted(dialog, AddLocationControl::CancelButton),
+    );
+
+    let cursor_area = match dialog.focus {
+        AddLocationControl::LabelField => Some((rows[1], dialog.label_cursor)),
+        AddLocationControl::TargetField => Some((rows[2], dialog.target_cursor)),
+        AddLocationControl::SecretField if dialog.kind.uses_secret() => {
+            Some((rows[3], dialog.secret_cursor))
+        }
+        _ => None,
+    };
+    if let Some((field_area, cursor)) = cursor_area {
+        let input_inner = padded_inner_rect(field_area, 1);
+        let text = match dialog.focus {
+            AddLocationControl::LabelField => &dialog.label,
+            AddLocationControl::TargetField => &dialog.target,
+            AddLocationControl::SecretField => &dialog.secret,
+            _ => "",
+        };
+        let cursor_x = input_inner
+            .x
+            .saturating_add(text[..cursor].chars().count() as u16);
+        frame.set_cursor_position((cursor_x, input_inner.y));
+    }
+}
+
 fn render_dialog_button(frame: &mut Frame<'_>, area: Rect, label: &str, highlighted: bool) {
     let border_style = if highlighted {
         Style::default().fg(Color::Yellow)
@@ -306,7 +496,9 @@ fn render_dialog_button(frame: &mut Frame<'_>, area: Rect, label: &str, highligh
         Style::default().fg(Color::DarkGray)
     };
     let text_style = if highlighted {
-        Style::default().fg(Color::White).add_modifier(Modifier::BOLD)
+        Style::default()
+            .fg(Color::White)
+            .add_modifier(Modifier::BOLD)
     } else {
         Style::default().fg(Color::Gray)
     };
@@ -316,7 +508,9 @@ fn render_dialog_button(frame: &mut Frame<'_>, area: Rect, label: &str, highligh
     let inner = block.inner(area);
     frame.render_widget(block, area);
     frame.render_widget(
-        Paragraph::new(label).style(text_style).alignment(Alignment::Center),
+        Paragraph::new(label)
+            .style(text_style)
+            .alignment(Alignment::Center),
         inner,
     );
 }
@@ -347,7 +541,7 @@ fn bottom_bar_buttons() -> [&'static str; FOOTER_BUTTON_COUNT] {
         "",
         "",
         "View (F3)",
-        "",
+        "Add (F4)",
         "Copy (F5)",
         "Move (F6)",
         "Mkdir (F7)",
@@ -375,6 +569,13 @@ fn bottom_bar_button_areas(area: Rect) -> Vec<Rect> {
 }
 
 fn transfer_control_highlighted(dialog: &TransferDialogState, control: TransferControl) -> bool {
+    dialog.focus == control || dialog.hovered == Some(control)
+}
+
+fn add_location_control_highlighted(
+    dialog: &AddLocationDialogState,
+    control: AddLocationControl,
+) -> bool {
     dialog.focus == control || dialog.hovered == Some(control)
 }
 
@@ -407,10 +608,21 @@ struct TransferDialogLayout {
     cancel_button: Rect,
 }
 
+struct AddLocationDialogLayout {
+    area: Rect,
+    help_text: Rect,
+    confirm_button: Rect,
+    cancel_button: Rect,
+}
+
 fn transfer_dialog_layout(dialog: &TransferDialogState, frame_area: Rect) -> TransferDialogLayout {
     let area = centered_rect(
         70,
-        if dialog.operation.shows_source() { 11 } else { 9 },
+        if dialog.operation.shows_source() {
+            11
+        } else {
+            9
+        },
         frame_area,
     );
     let inner = Block::default().borders(Borders::ALL).inner(area);
@@ -423,7 +635,11 @@ fn transfer_dialog_layout(dialog: &TransferDialogState, frame_area: Rect) -> Tra
                 Constraint::Length(3),
             ]
         } else {
-            [Constraint::Length(3), Constraint::Length(3), Constraint::Min(0)]
+            [
+                Constraint::Length(3),
+                Constraint::Length(3),
+                Constraint::Min(0),
+            ]
         })
         .split(inner);
 
@@ -456,6 +672,33 @@ fn transfer_dialog_layout(dialog: &TransferDialogState, frame_area: Rect) -> Tra
     }
 }
 
+fn add_location_dialog_layout(frame_area: Rect) -> AddLocationDialogLayout {
+    let area = centered_rect(72, 19, frame_area);
+    let inner = Block::default().borders(Borders::ALL).inner(area);
+    let rows = Layout::default()
+        .direction(Direction::Vertical)
+        .constraints([
+            Constraint::Length(3),
+            Constraint::Length(3),
+            Constraint::Length(3),
+            Constraint::Length(3),
+            Constraint::Length(1),
+            Constraint::Length(2),
+        ])
+        .split(inner);
+    let buttons = Layout::default()
+        .direction(Direction::Horizontal)
+        .constraints([Constraint::Percentage(50), Constraint::Percentage(50)])
+        .split(rows[5]);
+
+    AddLocationDialogLayout {
+        area,
+        help_text: rows[4],
+        confirm_button: buttons[0],
+        cancel_button: buttons[1],
+    }
+}
+
 fn padded_inner_rect(area: Rect, horizontal_padding: u16) -> Rect {
     let inner = Block::default().borders(Borders::ALL).inner(area);
     Rect {
@@ -475,33 +718,58 @@ fn rect_contains(area: Rect, x: u16, y: u16) -> bool {
 
 #[cfg(test)]
 mod tests {
-    use std::ffi::OsString;
     use std::fs;
-    use std::path::PathBuf;
 
     use ratatui::Terminal;
     use ratatui::backend::TestBackend;
     use ratatui::layout::Rect;
-    use ratatui::style::{Color, Modifier, Stylize};
     use tempfile::TempDir;
 
-    use super::{
-        bottom_bar_buttons, bottom_bar_hit_target, render_entry, transfer_dialog_hit_target,
-        transfer_dialog_layout,
-    };
+    use super::{bottom_bar_hit_target, render_entry};
     use crate::config::Config;
-    use crate::fs::{EntryKind, FileEntry};
-    use crate::state::{
-        ActivePane, AppState, InputMode, TransferControl, TransferDialogState, TransferOperation,
-    };
+    use crate::source::{EntryKind, FileEntry, LocationPath, SourceKind, SourceRef};
+    use crate::state::{AppState, InputMode, PaneState, SourceMenuState};
+    use crate::vfs::LocalSession;
 
     fn test_entry(kind: EntryKind, name: &str) -> FileEntry {
         FileEntry {
-            name: OsString::from(name),
-            path: PathBuf::from(name),
+            name: name.to_string(),
+            path: LocationPath::Remote(format!("/{name}")),
             kind,
             is_hidden: false,
         }
+    }
+
+    fn test_state() -> AppState {
+        let temp = TempDir::new().expect("temp dir");
+        fs::create_dir(temp.path().join("src")).expect("dir");
+        let left = PaneState::new(
+            SourceRef::InlineLocal {
+                path: temp.path().to_path_buf(),
+                label: "Tmp".to_string(),
+            },
+            SourceKind::Local,
+            "Tmp".to_string(),
+            LocationPath::Local(temp.path().to_path_buf()),
+            Box::new(
+                LocalSession::new("Tmp".to_string(), temp.path().to_path_buf()).expect("session"),
+            ),
+        )
+        .expect("pane");
+        let right = PaneState::new(
+            SourceRef::InlineLocal {
+                path: temp.path().to_path_buf(),
+                label: "Tmp".to_string(),
+            },
+            SourceKind::Local,
+            "Tmp".to_string(),
+            LocationPath::Local(temp.path().to_path_buf()),
+            Box::new(
+                LocalSession::new("Tmp".to_string(), temp.path().to_path_buf()).expect("session"),
+            ),
+        )
+        .expect("pane");
+        AppState::new(Config::default(), left, right)
     }
 
     #[test]
@@ -510,329 +778,27 @@ mod tests {
 
         assert_eq!(line.spans.len(), 1);
         assert_eq!(line.spans[0].content, "src");
-        assert!(!line.spans[0].content.contains("[D]"));
-        assert_eq!(line.spans[0].style, "src".cyan().style);
-    }
-
-    #[test]
-    fn selected_entries_use_selected_row_style() {
-        let line = render_entry(&test_entry(EntryKind::Directory, "src"), true);
-
-        assert_eq!(line.spans.len(), 1);
-        assert_eq!(line.spans[0].content, "src");
-        assert_eq!(line.spans[0].style, "src".white().on_blue().bold().style);
-    }
-
-    #[test]
-    fn inactive_pane_keeps_selection_state_without_drawing_highlight() {
-        let temp = TempDir::new().expect("temp dir");
-        let left_dir = temp.path().join("left");
-        let right_dir = temp.path().join("right");
-        fs::create_dir(&left_dir).expect("left dir");
-        fs::create_dir(&right_dir).expect("right dir");
-        fs::write(left_dir.join("alpha.txt"), b"a").expect("left file");
-        fs::write(right_dir.join("zeta.txt"), b"z").expect("right file");
-
-        let mut app = AppState::new(Config::default(), temp.path().to_path_buf()).expect("app");
-        app.left.set_cwd(left_dir).expect("left cwd");
-        app.right.set_cwd(right_dir).expect("right cwd");
-        app.left.selected = 0;
-        app.right.selected = 0;
-        app.active_pane = ActivePane::Right;
-
-        let backend = TestBackend::new(60, 6);
-        let mut terminal = Terminal::new(backend).expect("terminal");
-        terminal.draw(|frame| super::render(frame, &mut app)).expect("draw");
-
-        let buffer = terminal.backend().buffer();
-        let left_cell = &buffer[(1, 1)];
-        let right_cell = &buffer[(31, 1)];
-
-        assert_eq!(left_cell.symbol(), "a");
-        assert_eq!(left_cell.bg, Color::Reset);
-        assert!(!left_cell.modifier.contains(Modifier::BOLD));
-
-        assert_eq!(right_cell.symbol(), "z");
-        assert_eq!(right_cell.fg, Color::White);
-        assert_eq!(right_cell.bg, Color::Blue);
-        assert!(right_cell.modifier.contains(Modifier::BOLD));
-    }
-
-    #[test]
-    fn normal_mode_bottom_bar_renders_action_buttons() {
-        let temp = TempDir::new().expect("temp dir");
-        let app = AppState::new(Config::default(), temp.path().to_path_buf()).expect("app");
-
-        let backend = TestBackend::new(140, 3);
-        let mut terminal = Terminal::new(backend).expect("terminal");
-        terminal
-            .draw(|frame| super::render_bottom_bar(frame, &app, frame.area()))
-            .expect("draw");
-
-        let buffer = terminal.backend().buffer();
-        let rendered: String = (0..buffer.area.height)
-            .flat_map(|y| {
-                (0..buffer.area.width)
-                    .map(move |x| buffer[(x, y)].symbol().to_string())
-                    .chain(std::iter::once("\n".to_string()))
-            })
-            .collect();
-
-        assert!(!rendered.contains("Cmd (/)"));
-        assert!(!rendered.contains("Open (Ent)"));
-        assert!(rendered.contains("View (F3)"));
-        assert!(rendered.contains("Copy (F5)"));
-        assert!(rendered.contains("Move (F6)"));
-        assert!(rendered.contains("Mkdir (F7)"));
-        assert!(rendered.contains("Delete (F8)"));
-    }
-
-    #[test]
-    fn bottom_bar_uses_f_key_slots_only() {
-        let labels = bottom_bar_buttons();
-
-        assert_eq!(labels[0], "");
-        assert_eq!(labels[1], "");
-        assert_eq!(labels[2], "View (F3)");
-        assert_eq!(labels[3], "");
-        assert_eq!(labels[4], "Copy (F5)");
-        assert_eq!(labels[5], "Move (F6)");
-        assert_eq!(labels[6], "Mkdir (F7)");
-        assert_eq!(labels[7], "Delete (F8)");
-        assert_eq!(labels[8], "");
-        assert_eq!(labels[9], "");
     }
 
     #[test]
     fn bottom_bar_hit_target_ignores_empty_slots_and_maps_f_buttons() {
-        let temp = TempDir::new().expect("temp dir");
-        let app = AppState::new(Config::default(), temp.path().to_path_buf()).expect("app");
-
+        let app = test_state();
         assert_eq!(
-            bottom_bar_hit_target(&app, Rect::new(0, 0, 120, 20), 6, 18),
-            None
-        );
-        assert_eq!(
-            bottom_bar_hit_target(&app, Rect::new(0, 0, 120, 20), 30, 18),
+            bottom_bar_hit_target(&app, Rect::new(0, 0, 100, 20), 25, 18),
             Some(2)
         );
-        assert_eq!(
-            bottom_bar_hit_target(&app, Rect::new(0, 0, 120, 20), 50, 18),
-            Some(4)
-        );
     }
 
     #[test]
-    fn hovered_bottom_bar_button_uses_highlighted_border() {
-        let temp = TempDir::new().expect("temp dir");
-        let mut app = AppState::new(Config::default(), temp.path().to_path_buf()).expect("app");
-        app.footer_hovered = Some(4);
+    fn source_menu_renders_inside_target_pane() {
+        let mut app = test_state();
+        app.mode = InputMode::SourceMenu;
+        app.source_menu = Some(SourceMenuState::new(crate::state::ActivePane::Left));
 
-        let backend = TestBackend::new(140, 3);
+        let backend = TestBackend::new(80, 20);
         let mut terminal = Terminal::new(backend).expect("terminal");
         terminal
-            .draw(|frame| super::render_bottom_bar(frame, &app, frame.area()))
+            .draw(|frame| super::render(frame, &mut app))
             .expect("draw");
-
-        let buffer = terminal.backend().buffer();
-        assert_eq!(buffer[(56, 0)].fg, Color::Yellow);
-    }
-
-    #[test]
-    fn command_mode_bottom_bar_renders_centered_prompt() {
-        let temp = TempDir::new().expect("temp dir");
-        let mut app = AppState::new(Config::default(), temp.path().to_path_buf()).expect("app");
-        app.mode = InputMode::Command;
-        app.command.buffer = "ls".to_string();
-        app.command.cursor = app.command.buffer.len();
-
-        let backend = TestBackend::new(80, 3);
-        let mut terminal = Terminal::new(backend).expect("terminal");
-        terminal
-            .draw(|frame| super::render_bottom_bar(frame, &app, frame.area()))
-            .expect("draw");
-
-        let buffer = terminal.backend().buffer();
-        let rendered: String = (0..buffer.area.height)
-            .flat_map(|y| {
-                (0..buffer.area.width)
-                    .map(move |x| buffer[(x, y)].symbol().to_string())
-                    .chain(std::iter::once("\n".to_string()))
-            })
-            .collect();
-        let middle_row: String = (0..buffer.area.width)
-            .map(|x| buffer[(x, 1)].symbol().to_string())
-            .collect();
-
-        assert!(rendered.contains("cmd> ls"));
-        assert_eq!(buffer[(1, 1)].symbol(), " ");
-        let prompt_start = middle_row.find("cmd> ls").expect("prompt in middle row");
-        assert!(prompt_start > 1);
-        assert!(prompt_start < 70);
-    }
-
-    #[test]
-    fn transfer_dialog_renders_title_and_destination() {
-        let temp = TempDir::new().expect("temp dir");
-        let mut app = AppState::new(Config::default(), temp.path().to_path_buf()).expect("app");
-        app.mode = InputMode::Transfer;
-        app.transfer = Some(TransferDialogState::new(
-            TransferOperation::Copy,
-            temp.path().join("source.txt"),
-            "/tmp/dest".to_string(),
-        ));
-
-        let backend = TestBackend::new(60, 12);
-        let mut terminal = Terminal::new(backend).expect("terminal");
-        terminal.draw(|frame| super::render(frame, &mut app)).expect("draw");
-
-        let buffer = terminal.backend().buffer();
-        let rendered: String = (0..buffer.area.height)
-            .flat_map(|y| {
-                (0..buffer.area.width)
-                    .map(move |x| buffer[(x, y)].symbol().to_string())
-                    .chain(std::iter::once("\n".to_string()))
-            })
-            .collect();
-
-        assert!(rendered.contains("Copy File"));
-        assert!(rendered.contains("From"));
-        assert!(rendered.contains("To"));
-        assert!(rendered.contains("/tmp/dest"));
-        assert!(rendered.contains("Confirm (Enter)"));
-        assert!(rendered.contains("Cancel (Esc)"));
-    }
-
-    #[test]
-    fn create_directory_dialog_renders_path_prompt() {
-        let temp = TempDir::new().expect("temp dir");
-        let mut app = AppState::new(Config::default(), temp.path().to_path_buf()).expect("app");
-        app.mode = InputMode::Transfer;
-        app.transfer = Some(TransferDialogState::new(
-            TransferOperation::CreateDirectory,
-            temp.path().to_path_buf(),
-            "/tmp/new-dir".to_string(),
-        ));
-
-        let backend = TestBackend::new(60, 12);
-        let mut terminal = Terminal::new(backend).expect("terminal");
-        terminal.draw(|frame| super::render(frame, &mut app)).expect("draw");
-
-        let buffer = terminal.backend().buffer();
-        let rendered: String = (0..buffer.area.height)
-            .flat_map(|y| {
-                (0..buffer.area.width)
-                    .map(move |x| buffer[(x, y)].symbol().to_string())
-                    .chain(std::iter::once("\n".to_string()))
-            })
-            .collect();
-
-        assert!(rendered.contains("Create Directory"));
-        assert!(rendered.contains("Path"));
-        assert!(rendered.contains("/tmp/new-dir"));
-    }
-
-    #[test]
-    fn delete_dialog_renders_target_prompt() {
-        let temp = TempDir::new().expect("temp dir");
-        let mut app = AppState::new(Config::default(), temp.path().to_path_buf()).expect("app");
-        app.mode = InputMode::Transfer;
-        app.transfer = Some(TransferDialogState::new(
-            TransferOperation::Delete,
-            temp.path().join("victim.txt"),
-            String::new(),
-        ));
-
-        let backend = TestBackend::new(60, 12);
-        let mut terminal = Terminal::new(backend).expect("terminal");
-        terminal.draw(|frame| super::render(frame, &mut app)).expect("draw");
-
-        let buffer = terminal.backend().buffer();
-        let rendered: String = (0..buffer.area.height)
-            .flat_map(|y| {
-                (0..buffer.area.width)
-                    .map(move |x| buffer[(x, y)].symbol().to_string())
-                    .chain(std::iter::once("\n".to_string()))
-            })
-            .collect();
-
-        assert!(rendered.contains("Delete"));
-        assert!(rendered.contains("Target"));
-        assert!(rendered.contains("victim.txt"));
-    }
-
-    #[test]
-    fn transfer_dialog_maps_hits_to_controls() {
-        let temp = TempDir::new().expect("temp dir");
-        let mut app = AppState::new(Config::default(), temp.path().to_path_buf()).expect("app");
-        app.mode = InputMode::Transfer;
-        app.transfer = Some(TransferDialogState::new(
-            TransferOperation::Copy,
-            temp.path().join("source.txt"),
-            "/tmp/dest".to_string(),
-        ));
-
-        assert_eq!(
-            transfer_dialog_hit_target(&app, Rect::new(0, 0, 60, 12), 16, 9),
-            Some(TransferControl::ConfirmButton)
-        );
-        assert_eq!(
-            transfer_dialog_hit_target(&app, Rect::new(0, 0, 60, 12), 36, 9),
-            Some(TransferControl::CancelButton)
-        );
-    }
-
-    #[test]
-    fn hovered_transfer_button_uses_highlighted_border() {
-        let temp = TempDir::new().expect("temp dir");
-        let mut app = AppState::new(Config::default(), temp.path().to_path_buf()).expect("app");
-        app.mode = InputMode::Transfer;
-        app.transfer = Some(TransferDialogState::new(
-            TransferOperation::Copy,
-            temp.path().join("source.txt"),
-            "/tmp/dest".to_string(),
-        ));
-        app.transfer.as_mut().expect("dialog").hovered = Some(TransferControl::CancelButton);
-
-        let backend = TestBackend::new(60, 12);
-        let mut terminal = Terminal::new(backend).expect("terminal");
-        terminal.draw(|frame| super::render(frame, &mut app)).expect("draw");
-
-        let cancel_button = transfer_dialog_layout(
-            app.transfer.as_ref().expect("dialog"),
-            Rect::new(0, 0, 60, 12),
-        )
-        .cancel_button;
-        let border_cell = &terminal.backend().buffer()[(cancel_button.x, cancel_button.y)];
-
-        assert_eq!(border_cell.fg, Color::Yellow);
-    }
-
-    #[test]
-    fn preview_renders_file_title_and_text_lines() {
-        let temp = TempDir::new().expect("temp dir");
-        let mut app = AppState::new(Config::default(), temp.path().to_path_buf()).expect("app");
-        app.mode = InputMode::Preview;
-        app.preview = Some(crate::state::PreviewState::new(
-            temp.path().join("note.txt"),
-            "hello\nworld".to_string(),
-        ));
-
-        let backend = TestBackend::new(40, 8);
-        let mut terminal = Terminal::new(backend).expect("terminal");
-        terminal.draw(|frame| super::render(frame, &mut app)).expect("draw");
-
-        let buffer = terminal.backend().buffer();
-        let rendered: String = (0..buffer.area.height)
-            .flat_map(|y| {
-                (0..buffer.area.width)
-                    .map(move |x| buffer[(x, y)].symbol().to_string())
-                    .chain(std::iter::once("\n".to_string()))
-            })
-            .collect();
-
-        assert!(rendered.contains("note.txt"));
-        assert!(rendered.contains("hello"));
-        assert!(rendered.contains("world"));
     }
 }

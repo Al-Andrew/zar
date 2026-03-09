@@ -156,7 +156,9 @@ mod tests {
 
     use tempfile::TempDir;
 
-    use super::{copy_file, create_directory, delete_entry, move_file, read_directory, read_text_file};
+    use super::{
+        copy_file, create_directory, delete_entry, move_file, read_directory, read_text_file,
+    };
 
     #[test]
     fn sorts_directories_before_files_case_insensitively() {
